@@ -1,0 +1,30 @@
+name: Bug report
+description: Something in the launcher isn't working
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: FeatherLaunch version
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System
+      placeholder: Windows 10 22H2, or Ubuntu 22.04 on Wayland
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you were doing, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: launcher.log
+      description: In the launcher, open Settings, then choose Open under Data folder. Paste or attach the file.

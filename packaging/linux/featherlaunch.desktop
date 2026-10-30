@@ -1,0 +1,35 @@
+# Desktop entry for FeatherLaunch: adds it to your app menu and dock.
+#
+# How to install it:
+#
+#  1. Put the extracted "featherlaunch" folder where it will stay, for example ~/.local/opt:
+#       mkdir -p ~/.local/opt && mv featherlaunch ~/.local/opt/
+#
+#  2. Edit the two paths below (Exec and Icon) to point at that folder. Use full paths;
+#     "~" does not work in desktop entries. For example:
+#       Exec=/home/YOUR_NAME/.local/opt/featherlaunch/featherlaunch
+#       Icon=/home/YOUR_NAME/.local/opt/featherlaunch/featherlaunch.png
+#     Or replace them in one step (run inside the featherlaunch folder):
+#       sed -i "s|/path/to/featherlaunch|$PWD|g" featherlaunch.desktop
+#
+#  3. Copy this file to your applications folder:
+#       cp featherlaunch.desktop ~/.local/share/applications/
+#
+#  4. If it does not show up right away, refresh the menu (or log out and back in):
+#       update-desktop-database ~/.local/share/applications
+#
+# To remove it, delete ~/.local/share/applications/featherlaunch.desktop.
+
+[Desktop Entry]
+Type=Application
+Name=FeatherLaunch
+GenericName=Minecraft Launcher
+Comment=Lightweight Minecraft: Java Edition launcher
+Exec=/path/to/featherlaunch/featherlaunch
+Icon=/path/to/featherlaunch/featherlaunch.png
+Terminal=false
+Categories=Game;
+Keywords=minecraft;launcher;mods;modrinth;
+# Matches the window's app ID, so the dock groups the window with this entry.
+StartupWMClass=featherlaunch
+StartupNotify=true
