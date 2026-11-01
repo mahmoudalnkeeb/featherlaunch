@@ -15,15 +15,27 @@ use crate::tasks::Progress;
 
 pub const USER_AGENT: &str = concat!("mahmoudalnkeeb/featherlaunch/", env!("CARGO_PKG_VERSION"));
 
+static PROXY: OnceLock<String> = OnceLock::new();
+
+/// Sets the proxy for the launcher's own downloads. Must run before the first request.
+pub fn set_proxy(url: &str) {
+    let _ = PROXY.set(url.trim().to_string());
+}
+
 pub fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(Duration::from_secs(15))
-            .read_timeout(Duration::from_secs(60))
-            .build()
-            .expect("HTTP client")
+            .read_timeout(Duration::from_secs(60));
+        if let Some(url) = PROXY.get().filter(|u| !u.is_empty()) {
+            match reqwest::Proxy::all(url) {
+                Ok(proxy) => builder = builder.proxy(proxy),
+                Err(e) => crate::log::error(&format!("The proxy {url} can't be used: {e}")),
+            }
+        }
+        builder.build().expect("HTTP client")
     })
 }
 

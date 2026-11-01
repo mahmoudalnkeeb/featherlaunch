@@ -97,6 +97,7 @@ impl App {
         let (tx, rx) = mpsc::channel();
         let cfg = Config::load();
         crate::paths::set_instances(cfg.instances_dir.as_ref().map(std::path::PathBuf::from));
+        crate::net::set_proxy(&cfg.proxy);
         let mut app = Self {
             rt,
             bus: Bus { tx, ctx: cc.egui_ctx.clone() },
