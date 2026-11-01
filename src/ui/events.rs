@@ -223,6 +223,7 @@ impl App {
                     {
                         self.errors.push(format!("Saving {} failed: {e:#}", i.name));
                     }
+                    self.show_on_discord(&inst);
                     match self.cfg.on_launch {
                         OnLaunch::KeepOpen => {}
                         OnLaunch::Minimize => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),

@@ -88,6 +88,7 @@ pub struct App {
     deleting: HashSet<String>,
     /// Where the launch asked for on the command line goes, for that launch only.
     join_once: Option<(Option<String>, Option<String>)>,
+    discord: crate::discord::Presence,
     launcher_update: LauncherUpdate,
 }
 
@@ -135,6 +136,7 @@ impl App {
             optional: Vec::new(),
             deleting: HashSet::new(),
             join_once: None,
+            discord: Default::default(),
             launcher_update: Default::default(),
         };
         app.selected = app.instances.first().map(|i| i.id.clone());

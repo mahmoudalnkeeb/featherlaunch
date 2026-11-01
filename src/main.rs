@@ -6,6 +6,7 @@ mod cli;
 mod config;
 #[cfg(target_os = "linux")]
 mod desktop_entry;
+mod discord;
 mod icons;
 mod java;
 mod log;
