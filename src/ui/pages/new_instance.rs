@@ -293,6 +293,7 @@ fn details(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
 }
 
 fn modpacks(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
+    st.browser.categories = app.categories_for(ContentKind::Modpack);
     let browser = &mut st.browser;
     let group = &mut st.group;
     let first_search = browser.results.is_empty() && !browser.searching && !browser.search_failed && browser.query.is_empty();
@@ -320,7 +321,7 @@ fn modpacks(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
     match request {
         Some(Request::Search(offset)) => {
             st.browser.start_search();
-            app.search_modrinth(st.browser.query.clone(), ContentKind::Modpack, None, offset);
+            app.search_modrinth(st.browser.query.clone(), ContentKind::Modpack, None, st.browser.filter.clone(), offset);
         }
         Some(Request::Versions(hit)) => {
             let project = hit.project_id.clone();

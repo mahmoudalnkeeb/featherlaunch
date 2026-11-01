@@ -18,7 +18,7 @@ use crate::minecraft::launch::LogLine;
 use crate::minecraft::logs::SavedLog;
 use crate::minecraft::meta::mojang::ManifestEntry;
 use crate::minecraft::skin;
-use crate::modplatform::modrinth::{ContentKind, LocalFile, SearchResponse, Update, Version};
+use crate::modplatform::modrinth::{Category, ContentKind, LocalFile, SearchResponse, Update, Version};
 use crate::updater::Release;
 
 pub enum Event {
@@ -53,6 +53,7 @@ pub enum Event {
     Versions { project: String, versions: Vec<Version> },
     VersionsFailed(String),
     ContentChanged,
+    Categories(Vec<Category>),
     Updates(Vec<Update>),
     Java(Vec<JavaInstall>),
     Icon { key: String, image: Option<crate::icons::Decoded> },
@@ -241,6 +242,7 @@ impl App {
                         e.invalidate();
                     }
                 }
+                Event::Categories(list) => self.categories = list,
                 Event::Updates(updates) => {
                     if let Some(e) = &mut self.editor {
                         e.on_updates(updates);

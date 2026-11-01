@@ -12,7 +12,7 @@ use crate::minecraft::instance::Loader;
 use crate::minecraft::meta::loaders;
 use crate::minecraft::meta::mojang;
 use crate::minecraft::skin;
-use crate::modplatform::modrinth::{self, ContentKind};
+use crate::modplatform::modrinth::{self, Category, ContentKind, SearchFilter};
 use crate::tasks::Progress;
 
 impl App {
@@ -114,11 +114,35 @@ impl App {
         self.loader_requested.remove(&key);
     }
 
-    pub(super) fn search_modrinth(&self, query: String, kind: ContentKind, target: Option<(String, Loader)>, offset: u64) {
+    /// Category names for `kind`, loading them the first time they're wanted. Failing to load
+    /// them just leaves the filter out.
+    pub(super) fn categories_for(&mut self, kind: ContentKind) -> Vec<String> {
+        if !self.categories_requested {
+            self.categories_requested = true;
+            let bus = self.bus.clone();
+            self.rt.spawn(async move {
+                match modrinth::categories().await {
+                    Ok(list) => bus.send(Event::Categories(list)),
+                    Err(e) => crate::log::error(&format!("Loading categories failed: {e:#}")),
+                }
+            });
+        }
+        let wanted = |c: &&Category| c.project_type == kind.project_type() && c.header == "categories";
+        self.categories.iter().filter(wanted).map(|c| c.name.clone()).collect()
+    }
+
+    pub(super) fn search_modrinth(
+        &self,
+        query: String,
+        kind: ContentKind,
+        target: Option<(String, Loader)>,
+        filter: SearchFilter,
+        offset: u64,
+    ) {
         let bus = self.bus.clone();
         self.rt.spawn(async move {
             let (mc, loader) = target.unzip();
-            match modrinth::search(&query, kind, mc.as_deref(), loader, offset).await {
+            match modrinth::search(&query, kind, mc.as_deref(), loader, &filter, offset).await {
                 Ok(results) => bus.send(Event::Search { kind, offset, results }),
                 Err(e) => {
                     crate::log::error(&format!("Searching Modrinth failed: {e:#}"));

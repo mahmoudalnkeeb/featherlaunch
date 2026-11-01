@@ -14,6 +14,7 @@ use crate::java::{self, JavaInstall};
 use crate::minecraft::auth::{self, AccountKind, AccountStore, DeviceCode};
 use crate::minecraft::instance::{self, Instance, Loader};
 use crate::minecraft::meta::mojang::ManifestEntry;
+use crate::modplatform::modrinth::Category;
 use crate::tasks::Progress;
 use crate::updater;
 
@@ -72,6 +73,8 @@ pub struct App {
     loader_versions: HashMap<(Loader, String), Vec<String>>,
     loader_requested: HashSet<(Loader, String)>,
     loader_failed: HashSet<(Loader, String)>,
+    categories: Vec<Category>,
+    categories_requested: bool,
     java_list: Vec<JavaInstall>,
     device_code: Option<DeviceCode>,
     login_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -117,6 +120,8 @@ impl App {
             loader_versions: HashMap::new(),
             loader_requested: HashSet::new(),
             loader_failed: HashSet::new(),
+            categories: Vec::new(),
+            categories_requested: false,
             java_list: Vec::new(),
             device_code: None,
             login_cancel: None,

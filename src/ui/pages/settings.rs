@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, RichText};
 
-use crate::config::{Config, GameWindow, LOW_END_JVM_ARGS, LaunchHooks, OnLaunch};
+use crate::config::{Config, GameWindow, LOW_END_JVM_ARGS, LaunchHooks, OnLaunch, UpdateChannel};
 use crate::paths;
 use crate::ui::glyph::Glyph;
 use crate::ui::widgets::{self, Kind};
@@ -111,6 +111,17 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                 widgets::slider(ui, &mut draft.parallel_downloads, 1..=16, 1.0, "");
             });
 
+            widgets::form_row(ui, "Mod updates", |ui| {
+                let mut channel = draft.update_channel;
+                let items = [
+                    (UpdateChannel::All, "All versions"),
+                    (UpdateChannel::Beta, "Stable and beta"),
+                    (UpdateChannel::Release, "Stable only"),
+                ];
+                widgets::segmented(ui, &mut channel, &items);
+                draft.update_channel = channel;
+            });
+
             widgets::form_section(ui, "Storage", false);
             widgets::form_row(ui, "Data folder", |ui| {
                 let path = paths::root().to_string_lossy().into_owned();
@@ -131,7 +142,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             widgets::form_row(ui, "Instances folder", |ui| {
                 let path = paths::instances().to_string_lossy().into_owned();
                 widgets::line_tip(ui, &path, theme::label(), theme::TEXT, theme::H_MD);
-                if widgets::pill_sized(ui, Kind::Secondary, None, "Moveâ€¦", theme::H_SM).clicked()
+                if widgets::pill_sized(ui, Kind::Secondary, None, "Move…", theme::H_SM).clicked()
                     && let Some(dir) = rfd::FileDialog::new().pick_folder()
                 {
                     app.move_instances(dir);

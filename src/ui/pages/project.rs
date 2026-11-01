@@ -5,7 +5,7 @@
 
 use eframe::egui::{self, Layout, Rect, RichText, Sense, Ui, UiBuilder, vec2};
 
-use crate::modplatform::modrinth::{SearchHit, SearchResponse, Version};
+use crate::modplatform::modrinth::{SearchFilter, SearchHit, SearchResponse, Sort, Version, category_label};
 use crate::ui::icons::Icons;
 use crate::ui::theme;
 use crate::ui::widgets::{self, Kind};
@@ -28,6 +28,9 @@ pub struct Browser {
     pub versions: Option<Vec<Version>>,
     pub versions_failed: bool,
     pub version_idx: usize,
+    pub filter: SearchFilter,
+    /// Names of the categories that can be picked.
+    pub categories: Vec<String>,
 }
 
 impl Browser {
@@ -135,6 +138,27 @@ pub fn show(
         }
         ui.label(RichText::new(note).font(theme::label()).color(theme::TEXT_MUTED));
     });
+    ui.add_space(theme::S2);
+    let before = b.filter.clone();
+    ui.horizontal(|ui| {
+        widgets::combo("project-sort", b.filter.sort.label(), 160.0).show_ui(ui, |ui| {
+            for sort in Sort::ALL {
+                ui.selectable_value(&mut b.filter.sort, sort, sort.label());
+            }
+        });
+        if !b.categories.is_empty() {
+            let selected = b.filter.category.as_deref().map_or("All categories".to_string(), category_label);
+            widgets::combo("project-category", selected, 160.0).show_ui(ui, |ui| {
+                ui.selectable_value(&mut b.filter.category, None, "All categories");
+                for name in &b.categories {
+                    ui.selectable_value(&mut b.filter.category, Some(name.clone()), category_label(name));
+                }
+            });
+        }
+    });
+    if b.filter != before {
+        request = Some(Request::Search(0));
+    }
     ui.add_space(theme::S3);
 
     let area = ui.available_rect_before_wrap();

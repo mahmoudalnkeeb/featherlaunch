@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::config::UpdateChannel;
 use crate::minecraft::instance::{Instance, Loader};
 use crate::modplatform::{jar_meta, mrpack};
 use crate::net::{self, Download};
@@ -159,8 +160,70 @@ pub fn safe_file_name(name: &str) -> Result<&str> {
 }
 
 /// Modrinth facets: inner lists are OR, the outer list is AND.
-pub fn facets(kind: ContentKind, mc: Option<&str>, loader: Option<Loader>) -> String {
+/// How search results are ordered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sort {
+    #[default]
+    Relevance,
+    Downloads,
+    Follows,
+    Newest,
+    Updated,
+}
+
+impl Sort {
+    pub const ALL: [Sort; 5] = [Sort::Relevance, Sort::Downloads, Sort::Follows, Sort::Newest, Sort::Updated];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Sort::Relevance => "Most relevant",
+            Sort::Downloads => "Most downloads",
+            Sort::Follows => "Most follows",
+            Sort::Newest => "Newest",
+            Sort::Updated => "Recently updated",
+        }
+    }
+
+    fn index(self) -> &'static str {
+        match self {
+            Sort::Relevance => "relevance",
+            Sort::Downloads => "downloads",
+            Sort::Follows => "follows",
+            Sort::Newest => "newest",
+            Sort::Updated => "updated",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SearchFilter {
+    pub sort: Sort,
+    pub category: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Category {
+    pub name: String,
+    pub project_type: String,
+    pub header: String,
+}
+
+pub async fn categories() -> Result<Vec<Category>> {
+    net::get_json(&format!("{API}/tag/category")).await
+}
+
+/// `game-mechanics` → `Game mechanics`.
+pub fn category_label(name: &str) -> String {
+    let text = name.replace('-', " ");
+    let mut chars = text.chars();
+    chars.next().map_or(String::new(), |c| c.to_uppercase().chain(chars).collect())
+}
+
+pub fn facets(kind: ContentKind, mc: Option<&str>, loader: Option<Loader>, category: Option<&str>) -> String {
     let mut f: Vec<Vec<String>> = vec![vec![format!("project_type:{}", kind.project_type())]];
+    if let Some(category) = category {
+        f.push(vec![format!("categories:{category}")]);
+    }
     if let Some(mc) = mc {
         f.push(vec![format!("versions:{mc}")]);
     }
@@ -173,15 +236,24 @@ pub fn facets(kind: ContentKind, mc: Option<&str>, loader: Option<Loader>) -> St
     serde_json::to_string(&f).unwrap()
 }
 
-pub async fn search(query: &str, kind: ContentKind, mc: Option<&str>, loader: Option<Loader>, offset: u64) -> Result<SearchResponse> {
+pub async fn search(
+    query: &str,
+    kind: ContentKind,
+    mc: Option<&str>,
+    loader: Option<Loader>,
+    filter: &SearchFilter,
+    offset: u64,
+) -> Result<SearchResponse> {
+    // With nothing to match against, relevance means nothing, so the popular ones come first.
+    let index = if query.is_empty() && filter.sort == Sort::Relevance { Sort::Downloads } else { filter.sort };
     let resp = net::client()
         .get(format!("{API}/search"))
         .query(&[
             ("query", query.to_string()),
-            ("facets", facets(kind, mc, loader)),
+            ("facets", facets(kind, mc, loader, filter.category.as_deref())),
             ("limit", "20".to_string()),
             ("offset", offset.to_string()),
-            ("index", if query.is_empty() { "downloads" } else { "relevance" }.to_string()),
+            ("index", index.index().to_string()),
         ])
         .send()
         .await?
@@ -433,7 +505,7 @@ pub struct Update {
     pub version: Version,
 }
 
-pub async fn check_updates(inst: &Instance, kind: ContentKind) -> Result<Vec<Update>> {
+pub async fn check_updates(inst: &Instance, kind: ContentKind, channel: UpdateChannel) -> Result<Vec<Update>> {
     let files = list_local(inst, kind);
     let hashed: Vec<(String, LocalFile)> = tokio::task::spawn_blocking(move || {
         files.into_iter().filter(|f| f.path.is_file()).filter_map(|f| net::sha1_file(&f.path).ok().map(|h| (h, f))).collect()
@@ -449,6 +521,9 @@ pub async fn check_updates(inst: &Instance, kind: ContentKind) -> Result<Vec<Upd
     });
     if kind.uses_loader() && !inst.loader.modrinth_names().is_empty() {
         body["loaders"] = json!(inst.loader.modrinth_names());
+    }
+    if let Some(types) = channel.version_types() {
+        body["version_types"] = json!(types);
     }
     let latest: HashMap<String, Version> =
         net::client().post(format!("{API}/version_files/update")).json(&body).send().await?.error_for_status()?.json().await?;
@@ -672,16 +747,23 @@ mod tests {
     }
 
     #[test]
+    fn names_categories_for_people() {
+        assert_eq!(category_label("game-mechanics"), "Game mechanics");
+        assert_eq!(category_label("library"), "Library");
+        assert!(facets(ContentKind::Mod, None, None, Some("magic")).contains("categories:magic"));
+    }
+
+    #[test]
     fn facet_building() {
         assert_eq!(
-            facets(ContentKind::Mod, Some("1.20.1"), Some(Loader::Quilt)),
+            facets(ContentKind::Mod, Some("1.20.1"), Some(Loader::Quilt), None),
             r#"[["project_type:mod"],["versions:1.20.1"],["categories:quilt","categories:fabric"]]"#
         );
         assert_eq!(
-            facets(ContentKind::ResourcePack, Some("1.21"), Some(Loader::Fabric)),
+            facets(ContentKind::ResourcePack, Some("1.21"), Some(Loader::Fabric), None),
             r#"[["project_type:resourcepack"],["versions:1.21"]]"#
         );
-        assert_eq!(facets(ContentKind::Mod, None, Some(Loader::Vanilla)), r#"[["project_type:mod"]]"#);
+        assert_eq!(facets(ContentKind::Mod, None, Some(Loader::Vanilla), None), r#"[["project_type:mod"]]"#);
     }
 
     #[test]

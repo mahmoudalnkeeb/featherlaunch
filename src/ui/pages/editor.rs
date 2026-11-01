@@ -876,9 +876,9 @@ fn update_buttons(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: Conte
     let check = ui.add_enabled_ui(!ed.checking && has_files, |ui| widgets::pill(ui, Kind::Secondary, None, label));
     if check.inner.clicked() {
         ed.checking = true;
-        let (inst, bus) = (ed.inst.clone(), app.bus.clone());
+        let (inst, bus, channel) = (ed.inst.clone(), app.bus.clone(), app.cfg.update_channel);
         app.spawn(async move {
-            match modrinth::check_updates(&inst, kind).await {
+            match modrinth::check_updates(&inst, kind, channel).await {
                 Ok(updates) => {
                     if updates.is_empty() {
                         bus.send(Event::Info("Everything is up to date".to_string()));
@@ -989,6 +989,7 @@ fn browse(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind) 
             widgets::hint(ui, &format!("Also installs {deps} required dependenc{}", if deps == 1 { "y" } else { "ies" }));
         }
     };
+    ed.browser.categories = app.categories_for(kind);
     let mut request = project::show(ui, &app.icons, &mut ed.browser, &hint, &note, FOOTER_HEIGHT, footer);
     if ed.searched_kind != Some(kind) {
         ed.searched_kind = Some(kind);
@@ -1015,7 +1016,7 @@ fn browse(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind) 
     match request {
         Some(Request::Search(offset)) => {
             ed.browser.start_search();
-            app.search_modrinth(ed.browser.query.clone(), kind, target, offset);
+            app.search_modrinth(ed.browser.query.clone(), kind, target, ed.browser.filter.clone(), offset);
         }
         Some(Request::Versions(hit)) => {
             let project = hit.project_id.clone();
