@@ -29,6 +29,7 @@ pub struct NewInstance {
     mc: String,
     filter: String,
     snapshots: bool,
+    old_versions: bool,
     loader: Loader,
     loader_version: Option<String>,
     pub browser: Browser,
@@ -44,6 +45,7 @@ impl Default for NewInstance {
             mc: String::new(),
             filter: String::new(),
             snapshots: false,
+            old_versions: false,
             loader: Loader::Vanilla,
             loader_version: None,
             browser: Browser::default(),
@@ -126,14 +128,31 @@ fn custom(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
     ui.scope_builder(UiBuilder::new().max_rect(right).layout(Layout::top_down(egui::Align::LEFT)), |ui| details(app, ui, st)).inner
 }
 
+fn listed(kind: &str, snapshots: bool, old_versions: bool) -> bool {
+    match kind {
+        "release" => true,
+        "snapshot" => snapshots,
+        "old_alpha" | "old_beta" => old_versions,
+        _ => false,
+    }
+}
+
+fn kind_label(kind: &str) -> Option<&'static str> {
+    match kind {
+        "snapshot" => Some("Snapshot"),
+        "old_alpha" => Some("Alpha"),
+        "old_beta" => Some("Beta"),
+        _ => None,
+    }
+}
+
 fn versions(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) {
+    widgets::search(ui, &mut st.filter, "Filter versions", ui.available_width());
+    ui.add_space(theme::S2);
     ui.horizontal(|ui| {
-        let width = (ui.available_width() - 110.0).max(100.0);
-        widgets::search(ui, &mut st.filter, "Filter versions", width);
-        ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new("Snapshots").font(theme::label()).color(theme::TEXT_MUTED));
-            widgets::toggle(ui, &mut st.snapshots);
-        });
+        widgets::toggle_labeled(ui, &mut st.snapshots, "Snapshots");
+        ui.add_space(theme::S3);
+        widgets::toggle_labeled(ui, &mut st.old_versions, "Alpha and beta");
     });
     ui.add_space(theme::S2);
     if app.manifest_failed {
@@ -151,9 +170,10 @@ fn versions(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) {
                 ui.add(egui::Spinner::new().color(theme::ACCENT));
                 return;
             };
-            for v in manifest.iter().filter(|v| {
-                (v.kind == "release" || (st.snapshots && v.kind == "snapshot")) && (st.filter.is_empty() || v.id.contains(&st.filter))
-            }) {
+            for v in manifest
+                .iter()
+                .filter(|v| listed(&v.kind, st.snapshots, st.old_versions) && (st.filter.is_empty() || v.id.contains(&st.filter)))
+            {
                 let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
                 if !ui.is_rect_visible(rect) {
                     continue;
@@ -168,14 +188,8 @@ fn versions(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) {
                 let painter = ui.painter();
                 let id =
                     painter.text(Pos2::new(rect.left() + 10.0, y), egui::Align2::LEFT_CENTER, &v.id, theme::body_strong(), theme::TEXT);
-                if v.kind == "snapshot" {
-                    painter.text(
-                        Pos2::new(id.right() + theme::S2, y),
-                        egui::Align2::LEFT_CENTER,
-                        "Snapshot",
-                        theme::label(),
-                        theme::TEXT_MUTED,
-                    );
+                if let Some(label) = kind_label(&v.kind) {
+                    painter.text(Pos2::new(id.right() + theme::S2, y), egui::Align2::LEFT_CENTER, label, theme::label(), theme::TEXT_MUTED);
                 }
                 let date = v.release_time.get(..10).unwrap_or("");
                 painter.text(Pos2::new(rect.right() - 10.0, y), egui::Align2::RIGHT_CENTER, date, theme::label(), theme::TEXT_MUTED);
@@ -344,4 +358,19 @@ fn import(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
         }
     });
     close
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_kinds_follow_their_toggles() {
+        assert!(listed("release", false, false));
+        assert!(!listed("snapshot", false, true));
+        assert!(listed("snapshot", true, false));
+        assert!(!listed("old_alpha", true, false));
+        assert!(listed("old_alpha", false, true));
+        assert!(listed("old_beta", false, true));
+    }
 }
