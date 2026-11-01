@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use tokio::sync::oneshot;
 
+use super::dialogs::Confirm;
 use super::{App, LauncherUpdate, SkinTex};
 use crate::config::OnLaunch;
 use crate::java::JavaInstall;
@@ -25,28 +26,72 @@ pub enum Event {
     Warning(String),
     Manifest(Vec<ManifestEntry>),
     ManifestFailed,
-    LoaderVersions { loader: Loader, mc: String, versions: Vec<String> },
-    LoaderVersionsFailed { loader: Loader, mc: String },
+    LoaderVersions {
+        loader: Loader,
+        mc: String,
+        versions: Vec<String>,
+    },
+    LoaderVersionsFailed {
+        loader: Loader,
+        mc: String,
+    },
     InstancesChanged(Option<String>),
     InstanceDeleted(String),
     InstanceIconChanged(String),
-    Files { inst: String, request: u64, files: Vec<LocalFile> },
-    Worlds { inst: String, request: u64, worlds: Vec<World> },
+    /// A pack file was read; `files` lists what the player should confirm before importing it.
+    PackRead {
+        path: PathBuf,
+        group: String,
+        files: Vec<String>,
+    },
+    Files {
+        inst: String,
+        request: u64,
+        files: Vec<LocalFile>,
+    },
+    Worlds {
+        inst: String,
+        request: u64,
+        worlds: Vec<World>,
+    },
     DeviceCode(DeviceCode),
     LoginFinished,
     Account(Account),
-    Skin { id: String, front: Vec<u8>, head: Vec<u8> },
-    Log { inst: String, line: LogLine },
-    GameStarted { inst: String, kill: oneshot::Sender<()> },
-    GameExited { inst: String, code: Option<i32> },
-    Search { kind: ContentKind, offset: u64, results: SearchResponse },
+    Skin {
+        id: String,
+        front: Vec<u8>,
+        head: Vec<u8>,
+    },
+    Log {
+        inst: String,
+        line: LogLine,
+    },
+    GameStarted {
+        inst: String,
+        kill: oneshot::Sender<()>,
+    },
+    GameExited {
+        inst: String,
+        code: Option<i32>,
+    },
+    Search {
+        kind: ContentKind,
+        offset: u64,
+        results: SearchResponse,
+    },
     SearchFailed(ContentKind),
-    Versions { project: String, versions: Vec<Version> },
+    Versions {
+        project: String,
+        versions: Vec<Version>,
+    },
     VersionsFailed(String),
     ContentChanged,
     Updates(Vec<Update>),
     Java(Vec<JavaInstall>),
-    Icon { key: String, image: Option<crate::icons::Decoded> },
+    Icon {
+        key: String,
+        image: Option<crate::icons::Decoded>,
+    },
     LauncherUpdateFound(Release),
     LauncherUpdateInstalled(PathBuf),
     LauncherUpdateStopped,
@@ -101,6 +146,13 @@ impl App {
                     let stamp = self.instance(&id).and_then(|i| i.icon_stamp);
                     if let Some(e) = self.editor.as_mut().filter(|e| e.instance_id() == id) {
                         e.set_icon_stamp(stamp);
+                    }
+                }
+                Event::PackRead { path, group, files } => {
+                    if files.is_empty() {
+                        self.import_pack(path, group);
+                    } else {
+                        self.confirm = Some(Confirm::UncheckedPack { path, group, files });
                     }
                 }
                 Event::Files { inst, request, files } => {
