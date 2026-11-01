@@ -965,7 +965,7 @@ fn browse(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind) 
     match request {
         Some(Request::Search(offset)) => {
             ed.browser.start_search();
-            app.search_content(ed.browser.query.clone(), kind, target, offset, ed.browser.curseforge);
+            app.search_modrinth(ed.browser.query.clone(), kind, target, offset);
         }
         Some(Request::Versions(hit)) => {
             let project = hit.project_id.clone();
