@@ -112,6 +112,8 @@ pub struct Config {
     pub hooks: LaunchHooks,
     pub linux: LinuxOptions,
     pub low_memory_warning: bool,
+    /// Off by default, because it shows on the player's public profile.
+    pub discord_presence: bool,
     pub jvm_args: String,
     /// Global Java override; `None` picks or downloads the right Java automatically.
     pub java_path: Option<String>,
@@ -138,6 +140,7 @@ impl Default for Config {
             hooks: LaunchHooks::default(),
             linux: LinuxOptions::default(),
             low_memory_warning: true,
+            discord_presence: false,
             jvm_args: LOW_END_JVM_ARGS.to_string(),
             java_path: None,
             ignore_java_check: false,

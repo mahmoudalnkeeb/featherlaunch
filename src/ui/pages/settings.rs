@@ -27,6 +27,13 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                 widgets::slider(ui, &mut draft.min_memory_mb, 256..=8192, 256.0, " MB");
             });
             window_rows(ui, &mut draft.window);
+            widgets::form_row(ui, "Discord", |ui| {
+                ui.horizontal(|ui| {
+                    ui.set_min_height(theme::H_MD);
+                    widgets::toggle_labeled(ui, &mut draft.discord_presence, "Show what I'm playing on my profile");
+                });
+                widgets::hint(ui, "Shows the Minecraft version, loader and modpack. Anyone who can see your profile can see it.");
+            });
             widgets::form_row(ui, "Low memory", |ui| {
                 ui.horizontal(|ui| {
                     ui.set_min_height(theme::H_MD);
@@ -221,6 +228,9 @@ fn save_bar(app: &mut App, ui: &mut egui::Ui, draft: &mut Config) {
         if widgets::pill(ui, Kind::Primary, None, "Save").clicked() {
             match draft.save() {
                 Ok(()) => {
+                    if !draft.discord_presence {
+                        app.discord.set(None);
+                    }
                     app.cfg = draft.clone();
                     app.notify("Settings saved");
                 }
