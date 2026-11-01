@@ -2,6 +2,8 @@
 //! Instance page: mods / resource packs / shader packs (installed + Modrinth), worlds, log, settings.
 //! It replaces the library in the main area instead of floating in a window.
 
+use std::path::PathBuf;
+
 use eframe::egui::{self, Pos2, Rect, RichText, Sense, UiBuilder, vec2};
 
 use crate::minecraft::instance::{Instance, Loader, World};
@@ -444,16 +446,42 @@ fn content(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind)
                 }
             }
             if !ed.browse {
+                if widgets::pill(ui, Kind::Ghost, None, "Add files").clicked()
+                    && let Some(files) = rfd::FileDialog::new().add_filter(kind.label(), kind.extensions()).pick_files()
+                {
+                    add_files(app, ed, kind, files);
+                }
                 update_buttons(app, ui, ed, kind);
             }
         });
     });
     ui.add_space(theme::S3);
+    let dropped: Vec<PathBuf> = ui.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
+    if !dropped.is_empty() {
+        add_files(app, ed, kind, dropped);
+    }
     if ed.browse {
         browse(app, ui, ed, kind);
     } else {
         installed(app, ui, ed, kind);
     }
+}
+
+fn add_files(app: &mut App, ed: &mut Editor, kind: ContentKind, files: Vec<PathBuf>) {
+    let (inst, bus) = (ed.inst.clone(), app.bus.clone());
+    ed.browse = false;
+    app.spawn(async move {
+        let added = tokio::task::spawn_blocking(move || modrinth::add_files(&inst, kind, &files)).await??;
+        // Newly added files still need looking up on Modrinth.
+        bus.send(Event::ContentChanged);
+        bus.send(match added {
+            0 => Event::Warning(format!("Those files don't belong in {}", kind.label())),
+            1 => Event::Info("Added 1 file".to_string()),
+            n => Event::Info(format!("Added {n} files")),
+        });
+        Ok(())
+    });
+    ed.identified.remove(&kind);
 }
 
 fn read_files(app: &mut App, ed: &mut Editor, kind: ContentKind) {
@@ -524,7 +552,7 @@ fn installed(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKin
     let mut delete = None;
     egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
         if files.is_empty() {
-            widgets::empty_state(ui, "Nothing installed yet", "Browse Modrinth, or drop files into the folder.", |ui| {
+            widgets::empty_state(ui, "Nothing installed yet", "Browse Modrinth, or drop files here.", |ui| {
                 if widgets::pill(ui, Kind::Primary, None, "Browse Modrinth").clicked() {
                     ed.browse = true;
                 }

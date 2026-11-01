@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::minecraft::instance::{Instance, Loader};
-use crate::modplatform::mrpack;
+use crate::modplatform::{jar_meta, mrpack};
 use crate::net::{self, Download};
 use crate::paths;
 use crate::tasks::Progress;
@@ -50,6 +50,18 @@ impl ContentKind {
             ContentKind::ShaderPack => "Shader packs",
             ContentKind::Modpack => "Modpacks",
         }
+    }
+
+    pub fn extensions(self) -> &'static [&'static str] {
+        match self {
+            ContentKind::Mod => &["jar", "zip", "litemod"],
+            ContentKind::ResourcePack | ContentKind::ShaderPack => &["zip"],
+            ContentKind::Modpack => &[],
+        }
+    }
+
+    fn accepts(self, path: &Path) -> bool {
+        path.extension().and_then(|e| e.to_str()).is_some_and(|e| self.extensions().contains(&e.to_lowercase().as_str()))
     }
 
     fn uses_loader(self) -> bool {
@@ -359,6 +371,8 @@ pub struct LocalFile {
     pub file_name: String,
     pub path: PathBuf,
     pub enabled: bool,
+    /// In `content.json`. Other files may still have a name and version, read from the jar.
+    pub indexed: bool,
     pub title: Option<String>,
     pub version: Option<String>,
     pub icon_url: Option<String>,
@@ -374,11 +388,13 @@ pub fn list_local(inst: &Instance, kind: ContentKind) -> Vec<LocalFile> {
         .filter_map(|e| {
             let file_name = e.file_name().into_string().ok()?;
             let entry = index.files.get(&ContentIndex::key(kind.folder(), &file_name));
+            let jar = (entry.is_none() && kind == ContentKind::Mod).then(|| jar_meta::read(&e.path())).flatten();
             Some(LocalFile {
                 enabled: !file_name.ends_with(".disabled"),
                 path: e.path(),
-                title: entry.map(|e| e.title.clone()),
-                version: entry.map(|e| e.version_number.clone()),
+                indexed: entry.is_some(),
+                title: entry.map(|e| e.title.clone()).or_else(|| jar.as_ref().map(|j| j.title.clone())),
+                version: entry.map(|e| e.version_number.clone()).or_else(|| jar.and_then(|j| j.version)),
                 icon_url: entry.and_then(|e| e.icon_url.clone()),
                 file_name,
             })
@@ -440,7 +456,7 @@ pub async fn check_updates(inst: &Instance, kind: ContentKind) -> Result<Vec<Upd
 pub async fn identify(inst: &Instance, kind: ContentKind) -> Result<bool> {
     let index = ContentIndex::load(inst);
     let files: Vec<LocalFile> = list_local(inst, kind).into_iter().filter(|f| f.path.is_file()).collect();
-    let unknown: Vec<LocalFile> = files.iter().filter(|f| f.title.is_none()).cloned().collect();
+    let unknown: Vec<LocalFile> = files.iter().filter(|f| !f.indexed).cloned().collect();
     let hashed: Vec<(String, LocalFile)> =
         tokio::task::spawn_blocking(move || unknown.into_iter().filter_map(|f| net::sha1_file(&f.path).ok().map(|h| (h, f))).collect())
             .await?;
@@ -535,7 +551,7 @@ pub async fn apply_update(inst: &Instance, kind: ContentKind, update: Update, pr
     }
     if !was_enabled && let Some(name) = file_name {
         let path = inst.game_dir().join(kind.folder()).join(&name);
-        let local = LocalFile { file_name: name, path, enabled: true, title: None, version: None, icon_url: None };
+        let local = LocalFile { file_name: name, path, enabled: true, indexed: true, title: None, version: None, icon_url: None };
         set_enabled(&local, false)?;
     }
     Ok(())
@@ -550,6 +566,18 @@ pub fn delete_local(inst: &Instance, kind: ContentKind, file: &LocalFile) -> Res
     let key = ContentIndex::key(kind.folder(), &file.file_name);
     ContentIndex::update(inst, |index| index.files.remove(&key))?;
     Ok(())
+}
+
+/// Copies the files that belong in `kind`'s folder and returns how many that was.
+pub fn add_files(inst: &Instance, kind: ContentKind, files: &[PathBuf]) -> Result<usize> {
+    let dir = ensure_folder(inst, kind)?;
+    let mut added = 0;
+    for file in files.iter().filter(|f| f.is_file() && kind.accepts(f)) {
+        let name = file.file_name().context("file has no name")?;
+        std::fs::copy(file, dir.join(name)).with_context(|| format!("copying {}", file.display()))?;
+        added += 1;
+    }
+    Ok(added)
 }
 
 pub fn ensure_folder(inst: &Instance, kind: ContentKind) -> Result<PathBuf> {
