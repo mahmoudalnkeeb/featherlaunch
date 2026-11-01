@@ -625,7 +625,11 @@ fn copy_into(dir: &Path, kind: ContentKind, files: &[PathBuf]) -> Result<usize> 
     let mut added = 0;
     for file in files.iter().filter(|f| f.is_file() && kind.accepts(f)) {
         let name = file.file_name().context("file has no name")?;
-        std::fs::copy(file, dir.join(name)).with_context(|| format!("copying {}", file.display()))?;
+        let target = dir.join(name);
+        // Copying a file onto itself would empty it.
+        if std::fs::canonicalize(&target).ok() != std::fs::canonicalize(file).ok() {
+            std::fs::copy(file, target).with_context(|| format!("copying {}", file.display()))?;
+        }
         added += 1;
     }
     Ok(added)
@@ -654,6 +658,17 @@ mod tests {
         installed.missing.push("Fabric API".into());
         let warning = installed.warning(&inst).unwrap();
         assert!(warning.contains("Fabric API") && warning.contains("1.20.1"), "{warning}");
+    }
+
+    #[test]
+    fn adding_a_file_from_its_own_folder_keeps_it() {
+        let dir = std::env::temp_dir().join(format!("featherlaunch-test-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.jar");
+        std::fs::write(&file, "mod").unwrap();
+        assert_eq!(copy_into(&dir, ContentKind::Mod, std::slice::from_ref(&file)).unwrap(), 1);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "mod");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -6,6 +6,9 @@ use std::path::Path;
 
 use serde_json::Value;
 
+/// Far beyond any real metadata file. A jar can hold one that unpacks to gigabytes.
+const MAX_METADATA: u64 = 4 * 1024 * 1024;
+
 #[derive(Debug, PartialEq)]
 pub struct JarInfo {
     pub title: String,
@@ -16,7 +19,7 @@ pub fn read(path: &Path) -> Option<JarInfo> {
     let mut archive = zip::ZipArchive::new(std::fs::File::open(path).ok()?).ok()?;
     let mut text = |name: &str| {
         let mut out = String::new();
-        archive.by_name(name).ok()?.read_to_string(&mut out).ok()?;
+        archive.by_name(name).ok()?.take(MAX_METADATA).read_to_string(&mut out).ok()?;
         Some(out)
     };
     if let Some(json) = text("fabric.mod.json") {
