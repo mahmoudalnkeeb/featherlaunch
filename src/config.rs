@@ -42,6 +42,26 @@ pub struct LaunchHooks {
     pub env: String,
 }
 
+/// Which kinds of version a mod can update to. A stricter choice can stop updates for a mod that
+/// only publishes betas.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UpdateChannel {
+    #[default]
+    All,
+    Beta,
+    Release,
+}
+
+impl UpdateChannel {
+    pub fn version_types(self) -> Option<&'static [&'static str]> {
+        match self {
+            UpdateChannel::All => None,
+            UpdateChannel::Beta => Some(&["release", "beta"]),
+            UpdateChannel::Release => Some(&["release"]),
+        }
+    }
+}
+
 /// Options that only exist on Linux.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -99,6 +119,7 @@ pub struct Config {
     pub ignore_java_check: bool,
     pub on_launch: OnLaunch,
     pub parallel_downloads: usize,
+    pub update_channel: UpdateChannel,
     pub open_console_on_launch: bool,
     pub sidebar_collapsed: bool,
     pub check_updates: bool,
@@ -120,6 +141,7 @@ impl Default for Config {
             ignore_java_check: false,
             on_launch: OnLaunch::Minimize,
             parallel_downloads: 8,
+            update_channel: UpdateChannel::All,
             open_console_on_launch: false,
             sidebar_collapsed: false,
             check_updates: true,
