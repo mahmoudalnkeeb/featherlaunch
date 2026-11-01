@@ -22,6 +22,8 @@ pub struct Config {
     pub jvm_args: String,
     /// Global Java override; `None` picks or downloads the right Java automatically.
     pub java_path: Option<String>,
+    /// Use a chosen Java even when it doesn't suit the Minecraft version.
+    pub ignore_java_check: bool,
     pub on_launch: OnLaunch,
     pub parallel_downloads: usize,
     pub open_console_on_launch: bool,
@@ -35,6 +37,7 @@ impl Default for Config {
             memory_mb: 3072,
             jvm_args: LOW_END_JVM_ARGS.to_string(),
             java_path: None,
+            ignore_java_check: false,
             on_launch: OnLaunch::Minimize,
             parallel_downloads: 8,
             open_console_on_launch: false,

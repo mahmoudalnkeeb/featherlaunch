@@ -23,6 +23,8 @@ pub struct Prepared {
     pub java: PathBuf,
     pub args: Vec<String>,
     pub game_dir: PathBuf,
+    /// Things the player should know about this launch.
+    pub notes: Vec<String>,
 }
 
 pub async fn prepare(inst: &Instance, account: &Account, offline: bool, cfg: &Config, progress: &Progress) -> Result<Prepared> {
@@ -31,8 +33,19 @@ pub async fn prepare(inst: &Instance, account: &Account, offline: bool, cfg: &Co
     let vanilla = mojang::ensure_vanilla(&inst.mc_version).await?;
 
     let required = vanilla.java_version.as_ref().map_or(8, |j| j.major_version);
-    let java = match inst.java_path.as_ref().or(cfg.java_path.as_ref()) {
-        Some(p) => PathBuf::from(p),
+    let mut notes = Vec::new();
+    let java = match inst.java_path.as_ref().or(cfg.java_path.as_ref()).map(PathBuf::from) {
+        Some(path) if cfg.ignore_java_check => path,
+        Some(path) => {
+            let checked = path.clone();
+            let major = tokio::task::spawn_blocking(move || java::major_of(&checked)).await??;
+            if java::fits(major, required) {
+                path
+            } else {
+                notes.push(format!("Minecraft {} needs Java {required}, not Java {major}. Using automatic Java instead.", inst.mc_version));
+                java::ensure(required, progress).await?
+            }
+        }
         None => java::ensure(required, progress).await?,
     };
 
@@ -133,7 +146,7 @@ pub async fn prepare(inst: &Instance, account: &Account, offline: bool, cfg: &Co
         (None, None) => {}
     }
 
-    Ok(Prepared { java, args, game_dir })
+    Ok(Prepared { java, args, game_dir, notes })
 }
 
 fn client_jar(mc: &str) -> PathBuf {
@@ -477,7 +490,7 @@ mod tests {
         let (java, args) = ("ping", ["-n", "11", "127.0.0.1"].map(String::from).to_vec());
         #[cfg(not(windows))]
         let (java, args) = ("sleep", vec!["10".to_string()]);
-        let prep = Prepared { java: java.into(), args, game_dir: std::env::temp_dir() };
+        let prep = Prepared { java: java.into(), args, game_dir: std::env::temp_dir(), notes: Vec::new() };
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let _kill = runtime.block_on(async { spawn(prep, Arc::new(|_| {}), |_| {}) }).unwrap();
@@ -496,7 +509,7 @@ mod tests {
         let (java, args) = ("cmd", ["/c", "echo", "out&", "echo", "err", "1>&2"].map(String::from).to_vec());
         #[cfg(not(windows))]
         let (java, args) = ("sh", ["-c", "echo out; echo err >&2"].map(String::from).to_vec());
-        let prep = Prepared { java: java.into(), args, game_dir: std::env::temp_dir() };
+        let prep = Prepared { java: java.into(), args, game_dir: std::env::temp_dir(), notes: Vec::new() };
 
         let (line_tx, lines) = std::sync::mpsc::channel();
         let sink: LineSink = Arc::new(move |line| {
