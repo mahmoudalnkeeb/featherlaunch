@@ -5,9 +5,11 @@ use std::collections::VecDeque;
 
 use eframe::egui::{self, RichText};
 
-use crate::minecraft::launch::{Level, LogLine};
+use crate::minecraft::launch::{Level, LogLine, LogParser};
+use crate::minecraft::logs;
+use crate::ui::dialogs::Confirm;
 use crate::ui::widgets::{self, Kind};
-use crate::ui::{App, theme};
+use crate::ui::{App, Event, theme};
 
 const MAX_LINES: usize = 10_000;
 
@@ -17,6 +19,7 @@ pub struct Console {
     first: u64,
     filter: String,
     follow: bool,
+    saved: bool,
     /// Lines (by sequence number) matching `matched_filter`, checked up to `matched_to`. Each
     /// frame only checks new lines, instead of lowercasing the whole log again while it streams.
     matches: VecDeque<u64>,
@@ -31,6 +34,7 @@ impl Default for Console {
             first: 0,
             filter: String::new(),
             follow: true,
+            saved: false,
             matches: VecDeque::new(),
             matched_filter: String::new(),
             matched_to: 0,
@@ -40,10 +44,20 @@ impl Default for Console {
 
 pub enum Action {
     None,
-    OpenCrashReports,
+    Upload(String),
 }
 
 impl Console {
+    /// A viewer for a log already on disk.
+    pub fn saved(text: &str) -> Self {
+        let mut console = Self { saved: true, follow: false, ..Default::default() };
+        let mut parser = LogParser::default();
+        for line in text.lines().filter_map(|l| parser.feed(l)) {
+            console.push(line);
+        }
+        console
+    }
+
     pub fn push(&mut self, line: LogLine) {
         for part in line.text.split('\n') {
             if self.lines.len() >= MAX_LINES {
@@ -61,16 +75,15 @@ impl Console {
             ui.add_space(theme::S2);
             widgets::toggle_labeled(ui, &mut self.follow, "Follow");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if widgets::pill(ui, Kind::Ghost, None, "Clear").clicked() {
+                if !self.saved && widgets::pill(ui, Kind::Ghost, None, "Clear").clicked() {
                     self.first += self.lines.len() as u64;
                     self.lines.clear();
                 }
                 if widgets::pill(ui, Kind::Ghost, None, "Copy all").clicked() {
-                    let text: Vec<&str> = self.lines.iter().map(|l| l.text.as_str()).collect();
-                    ui.ctx().copy_text(text.join("\n"));
+                    ui.ctx().copy_text(self.text());
                 }
-                if widgets::pill(ui, Kind::Ghost, None, "Crash reports").clicked() {
-                    action = Action::OpenCrashReports;
+                if !self.lines.is_empty() && widgets::pill(ui, Kind::Ghost, None, "Upload").clicked() {
+                    action = Action::Upload(self.text());
                 }
             });
         });
@@ -109,6 +122,10 @@ impl Console {
         action
     }
 
+    fn text(&self) -> String {
+        self.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n")
+    }
+
     fn update_matches(&mut self) {
         let filter = self.filter.to_lowercase();
         if filter != self.matched_filter {
@@ -129,17 +146,22 @@ impl Console {
     }
 }
 
-pub fn handle(app: &mut App, inst_id: &str, action: Action) {
+pub fn handle(app: &mut App, action: Action) {
     match action {
         Action::None => {}
-        Action::OpenCrashReports => {
-            if let Some(inst) = app.instance(inst_id) {
-                match inst.latest_crash_report() {
-                    Some(file) => app.open(file),
-                    None => app.notify("No crash reports for this instance"),
-                }
-            }
-        }
+        Action::Upload(text) => app.confirm = Some(Confirm::UploadLog { text }),
+    }
+}
+
+impl App {
+    pub fn upload_log(&mut self, text: String) {
+        let tokens: Vec<String> = self.accounts.accounts.iter().filter_map(|a| a.token.clone()).collect();
+        let home = directories::BaseDirs::new().map(|b| b.home_dir().to_string_lossy().into_owned());
+        self.task("Uploading log", move |_, bus| async move {
+            let clean = tokio::task::spawn_blocking(move || logs::redact(&text, &tokens, home.as_deref())).await?;
+            bus.send(Event::LogUploaded(logs::upload(&clean).await?));
+            Ok(())
+        });
     }
 }
 
@@ -149,6 +171,13 @@ mod tests {
 
     fn line(text: &str) -> LogLine {
         LogLine { level: Level::Info, text: text.into() }
+    }
+
+    #[test]
+    fn opens_a_saved_log_with_levels() {
+        let c = Console::saved("[main/INFO] fine\r\n[main/ERROR] bad\n");
+        assert_eq!(c.text(), "[main/INFO] fine\n[main/ERROR] bad");
+        assert!(matches!(c.lines[1].level, Level::Error));
     }
 
     #[test]

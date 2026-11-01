@@ -18,6 +18,7 @@ pub enum Confirm {
     LowMemory { id: String, offline: bool, memory_mb: u32, free_mb: u64 },
     UncheckedPack { path: PathBuf, group: String, files: Vec<String> },
     DeleteWorld(Box<World>),
+    UploadLog { text: String },
 }
 
 /// How many paths a dialog names before summing up the rest.
@@ -106,6 +107,17 @@ fn prompt(app: &App, confirm: &Confirm) -> Option<Prompt> {
             confirm: "Delete",
             enabled: true,
         },
+        Confirm::UploadLog { text } => Prompt {
+            title: "Upload log",
+            body: format!("{} lines will be sent to mclo.gs, and anyone with the link can read them.", text.lines().count()),
+            note: Some((
+                "Access tokens and your home folder are hidden first. Check the log for anything else private.".to_string(),
+                theme::WARN,
+            )),
+            cancel: "Cancel",
+            confirm: "Upload",
+            enabled: true,
+        },
     })
 }
 
@@ -132,6 +144,7 @@ fn apply(app: &mut App, confirm: Confirm) {
         Confirm::Discard(page) => app.go_now(page),
         Confirm::LowMemory { id, offline, .. } => app.launch_despite_low_memory(&id, offline),
         Confirm::UncheckedPack { path, group, .. } => app.import_pack(path, group),
+        Confirm::UploadLog { text } => app.upload_log(text),
         Confirm::DeleteWorld(world) => {
             app.task(format!("Deleting {}", world.name), move |_, bus| async move {
                 tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&world.path)).await??;

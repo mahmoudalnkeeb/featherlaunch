@@ -15,6 +15,7 @@ use crate::java::JavaInstall;
 use crate::minecraft::auth::{Account, DeviceCode};
 use crate::minecraft::instance::{Loader, World};
 use crate::minecraft::launch::LogLine;
+use crate::minecraft::logs::SavedLog;
 use crate::minecraft::meta::mojang::ManifestEntry;
 use crate::minecraft::skin;
 use crate::modplatform::modrinth::{ContentKind, LocalFile, SearchResponse, Update, Version};
@@ -34,6 +35,9 @@ pub enum Event {
     PackRead { path: PathBuf, group: String, files: Vec<String> },
     Files { inst: String, request: u64, files: Vec<LocalFile> },
     Worlds { inst: String, request: u64, worlds: Vec<World> },
+    SavedLogs { inst: String, request: u64, logs: Vec<SavedLog> },
+    SavedLog { inst: String, name: String, text: String },
+    LogUploaded(String),
     DeviceCode(DeviceCode),
     LoginFinished,
     Account(Account),
@@ -121,6 +125,20 @@ impl App {
                     if let Some(e) = self.editor.as_mut().filter(|e| e.instance_id() == inst) {
                         e.on_worlds(request, worlds);
                     }
+                }
+                Event::SavedLogs { inst, request, logs } => {
+                    if let Some(e) = self.editor.as_mut().filter(|e| e.instance_id() == inst) {
+                        e.on_saved_logs(request, logs);
+                    }
+                }
+                Event::SavedLog { inst, name, text } => {
+                    if let Some(e) = self.editor.as_mut().filter(|e| e.instance_id() == inst) {
+                        e.on_saved_log(name, &text);
+                    }
+                }
+                Event::LogUploaded(url) => {
+                    ctx.copy_text(url.clone());
+                    self.notify(format!("Link copied: {url}"));
                 }
                 Event::DeviceCode(code) => self.device_code = Some(code),
                 Event::LoginFinished => {
