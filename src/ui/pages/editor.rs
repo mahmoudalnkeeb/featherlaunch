@@ -11,7 +11,7 @@ use crate::minecraft::instance::{ExportInfo, Instance, Loader, World};
 use crate::minecraft::logs::{self, SavedLog};
 use crate::minecraft::servers::{self, Server};
 use crate::minecraft::world;
-use crate::modplatform::modrinth::{self, ContentKind, LocalFile, SearchResponse, Update};
+use crate::modplatform::modrinth::{self, ContentKind, LocalFile, ProjectMeta, SearchResponse, Update, Version};
 use crate::modplatform::{export, mrpack};
 use crate::ui::dialogs::Confirm;
 use crate::ui::glyph::Glyph;
@@ -48,6 +48,36 @@ enum SavesView {
     Screenshots,
 }
 
+/// Something picked while browsing, waiting to be installed with the rest.
+struct Queued {
+    kind: ContentKind,
+    /// The world a data pack goes in.
+    world: Option<World>,
+    meta: ProjectMeta,
+    version: Version,
+}
+
+impl Queued {
+    fn same_project(&self, version: &Version, world: Option<&World>) -> bool {
+        self.version.project_id == version.project_id && self.world.as_ref().map(|w| &w.path) == world.map(|w| &w.path)
+    }
+}
+
+/// Picking a project adds it, picking it again takes it off, and another version replaces it.
+fn toggle_queued(queue: &mut Vec<Queued>, item: Queued) {
+    match queue.iter().position(|q| q.same_project(&item.version, item.world.as_ref())) {
+        Some(i) if queue[i].version.id == item.version.id => {
+            queue.remove(i);
+        }
+        Some(i) => queue[i] = item,
+        None => queue.push(item),
+    }
+}
+
+fn plural(count: usize, one: &str) -> String {
+    if count == 1 { format!("1 {one}") } else { format!("{count} {one}s") }
+}
+
 struct ExportForm {
     as_pack: bool,
     info: ExportInfo,
@@ -64,6 +94,8 @@ pub struct Editor {
     worlds: Option<Vec<World>>,
     /// The world whose data packs are open on the Worlds tab.
     pack_world: Option<World>,
+    queue: Vec<Queued>,
+    reviewing: bool,
     saves_view: SavesView,
     servers: Option<Vec<Server>>,
     server_status: HashMap<String, String>,
@@ -111,6 +143,8 @@ impl Editor {
             files: None,
             worlds: None,
             pack_world: None,
+            queue: Vec::new(),
+            reviewing: false,
             saves_view: SavesView::default(),
             servers: None,
             server_status: HashMap::new(),
@@ -147,7 +181,7 @@ impl Editor {
     }
 
     pub fn has_changes(&self) -> bool {
-        self.draft != self.inst
+        self.draft != self.inst || !self.queue.is_empty()
     }
 
     /// The list on screen stays until the new one arrives, so it doesn't flicker.
@@ -288,7 +322,7 @@ enum PageAction {
 pub fn page(app: &mut App, ui: &mut egui::Ui) {
     let Some(mut ed) = app.editor.take() else { return };
     let mut action = None;
-    if ed.tab == Tab::Settings && ed.has_changes() {
+    if ed.tab == Tab::Settings && ed.draft != ed.inst {
         save_bar(app, ui, &mut ed);
     }
     widgets::page_frame().show(ui, |ui| {
@@ -316,7 +350,9 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             Tab::Export => export_tab(app, ui, &mut ed),
         }
     });
+    review_dialog(app, ui.ctx(), &mut ed);
     let esc = !ed.esc_taken
+        && !ed.reviewing
         && app.errors.is_empty()
         && app.confirm.is_none()
         && app.device_code.is_none()
@@ -686,6 +722,7 @@ fn content(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind)
         widgets::segmented(ui, &mut browse, &[(false, installed.as_str()), (true, browse_label)]);
         ed.browse = browse;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            review_button(ui, ed);
             if widgets::pill(ui, Kind::Ghost, None, "Open folder").clicked() {
                 match modrinth::ensure_folder(&ed.inst, kind) {
                     Ok(dir) => app.open(dir),
@@ -712,6 +749,83 @@ fn content(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind)
     } else {
         installed(app, ui, ed, kind);
     }
+}
+
+fn review_button(ui: &mut egui::Ui, ed: &mut Editor) {
+    if !ed.queue.is_empty() && widgets::pill(ui, Kind::Primary, None, &format!("Review ({})", ed.queue.len())).clicked() {
+        ed.reviewing = true;
+    }
+}
+
+fn review_dialog(app: &mut App, ctx: &egui::Context, ed: &mut Editor) {
+    if !ed.reviewing {
+        return;
+    }
+    let mut remove = None;
+    let mut install = false;
+    let mut back = false;
+    let title = format!("Install {}", plural(ed.queue.len(), "item"));
+    let (_, closed) = widgets::dialog(ctx, "review-queue", &title, 460.0, |ui| {
+        egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+            for (i, item) in ed.queue.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(ui.available_width() - theme::H_MD - theme::S2);
+                        ui.label(RichText::new(&item.meta.title).color(theme::TEXT));
+                        ui.label(RichText::new(&item.version.version_number).font(theme::label()).color(theme::TEXT_MUTED));
+                    });
+                    if widgets::icon_button(ui, Glyph::Trash, "Remove").clicked() {
+                        remove = Some(i);
+                    }
+                });
+            }
+        });
+        ui.add_space(theme::S2);
+        widgets::hint(ui, "Required dependencies are added when these install.");
+        widgets::dialog_buttons(ui, |ui| {
+            install = widgets::pill(ui, Kind::Primary, None, "Install all").clicked();
+            back = widgets::pill(ui, Kind::Secondary, None, "Keep browsing").clicked();
+        });
+    });
+    if let Some(i) = remove {
+        ed.queue.remove(i);
+    }
+    if install {
+        install_queue(app, ed);
+    }
+    if install || back || closed || ed.queue.is_empty() {
+        ed.reviewing = false;
+    }
+}
+
+/// Installs everything picked, as one task. One that fails doesn't stop the rest.
+fn install_queue(app: &mut App, ed: &mut Editor) {
+    let items = std::mem::take(&mut ed.queue);
+    let inst = ed.inst.clone();
+    ed.browse = false;
+    let title = format!("Installing {}", plural(items.len(), "item"));
+    app.cancellable_task(title, move |progress, bus| async move {
+        let total = items.len();
+        let mut problems = Vec::new();
+        for item in items {
+            let name = item.meta.title.clone();
+            let result = match item.world {
+                Some(world) => modrinth::install_data_pack(&world.path, &item.version, &progress).await,
+                None => modrinth::install(&inst, item.kind, item.version, item.meta, &progress).await.map(|installed| {
+                    problems.extend(installed.warning(&inst));
+                }),
+            };
+            if let Err(e) = result {
+                problems.push(format!("{name}: {e:#}"));
+            }
+            bus.send(Event::ContentChanged);
+        }
+        match problems.is_empty() {
+            true => bus.send(Event::Info(format!("Installed {}", plural(total, "item")))),
+            false => bus.send(Event::Error(problems.join("\n"))),
+        }
+        Ok(())
+    });
 }
 
 fn export_tab(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
@@ -1015,8 +1129,10 @@ fn browse(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind) 
     let target = Some((mc.clone(), loader));
     let note = if loader == Loader::Vanilla { format!("for {mc}") } else { format!("for {mc}  ·  {}", loader.name()) };
     let hint = format!("Search {}", kind.label().to_lowercase());
-    let mut install = None;
-    let footer = |ui: &mut egui::Ui, versions: &[crate::modplatform::modrinth::Version], idx: &mut usize| {
+    let mut picked = None;
+    let queue = &ed.queue;
+    let world = ed.pack_world.as_ref();
+    let footer = |ui: &mut egui::Ui, versions: &[Version], idx: &mut usize| {
         *idx = (*idx).min(versions.len() - 1);
         ui.horizontal(|ui| {
             let width = ui.available_width() - project::INSTALL_WIDTH - theme::S2;
@@ -1025,8 +1141,14 @@ fn browse(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind) 
                     ui.selectable_value(idx, i, format!("{} ({})", v.name, v.loaders.join(", ")));
                 }
             });
-            if widgets::pill(ui, Kind::Primary, None, "Install").clicked() {
-                install = Some(versions[*idx].clone());
+            let queued = queue.iter().find(|q| q.same_project(&versions[*idx], world));
+            let label = match queued {
+                Some(q) if q.version.id == versions[*idx].id => "Remove",
+                Some(_) => "Replace",
+                None => "Add",
+            };
+            if widgets::pill(ui, Kind::Primary, None, label).clicked() {
+                picked = Some(versions[*idx].clone());
             }
         });
         let deps = versions[*idx].dependencies.iter().filter(|d| d.dependency_type == "required").count();
@@ -1040,23 +1162,9 @@ fn browse(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind) 
         ed.searched_kind = Some(kind);
         request = Some(Request::Search(0));
     }
-    if let (Some(version), Some(hit)) = (install, &ed.browser.hit) {
-        let (inst, meta, world) = (ed.inst.clone(), hit.meta(), ed.pack_world.clone());
-        app.cancellable_task(format!("Installing {}", meta.title), move |progress, bus| async move {
-            if let Some(world) = world {
-                modrinth::install_data_pack(&world.path, &version, &progress).await?;
-                bus.send(Event::ContentChanged);
-                bus.send(Event::Info(format!("Installed {} in {}", meta.title, world.name)));
-                return Ok(());
-            }
-            let installed = modrinth::install(&inst, kind, version, meta, &progress).await?;
-            bus.send(Event::ContentChanged);
-            match installed.warning(&inst) {
-                Some(warning) => bus.send(Event::Error(warning)),
-                None => bus.send(Event::Info(installed.summary())),
-            }
-            Ok(())
-        });
+    if let (Some(version), Some(hit)) = (picked, &ed.browser.hit) {
+        let item = Queued { kind, world: ed.pack_world.clone(), meta: hit.meta(), version };
+        toggle_queued(&mut ed.queue, item);
     }
     match request {
         Some(Request::Search(offset)) => {
@@ -1388,6 +1496,7 @@ fn data_packs(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, world: &World) 
         widgets::segmented(ui, &mut browse, &[(false, installed.as_str()), (true, "Browse Modrinth")]);
         ed.browse = browse;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            review_button(ui, ed);
             if !ed.browse
                 && widgets::pill(ui, Kind::Ghost, None, "Add files").clicked()
                 && let Some(files) = rfd::FileDialog::new().add_filter("Data packs", ContentKind::DataPack.extensions()).pick_files()
@@ -1408,5 +1517,46 @@ fn data_packs(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, world: &World) 
     }
     if back {
         ed.close_data_packs();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(project: &str, version: &str, world: Option<&str>) -> Queued {
+        let version = serde_json::from_value(serde_json::json!({
+            "id": version, "project_id": project, "name": version, "version_number": version, "files": []
+        }))
+        .unwrap();
+        let world = world.map(|w| World { name: w.into(), path: w.into(), modified: None });
+        Queued { kind: ContentKind::Mod, world, meta: ProjectMeta { title: project.into(), icon_url: None }, version }
+    }
+
+    #[test]
+    fn picking_toggles_a_project() {
+        let mut queue = Vec::new();
+        toggle_queued(&mut queue, item("a", "1", None));
+        toggle_queued(&mut queue, item("b", "1", None));
+        assert_eq!(queue.len(), 2);
+        toggle_queued(&mut queue, item("a", "2", None));
+        assert_eq!((queue.len(), queue[0].version.id.as_str()), (2, "2"), "another version replaces it");
+        toggle_queued(&mut queue, item("a", "2", None));
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].version.project_id, "b");
+    }
+
+    #[test]
+    fn a_data_pack_can_go_in_two_worlds() {
+        let mut queue = Vec::new();
+        toggle_queued(&mut queue, item("a", "1", Some("One")));
+        toggle_queued(&mut queue, item("a", "1", Some("Two")));
+        assert_eq!(queue.len(), 2);
+    }
+
+    #[test]
+    fn counts_read_naturally() {
+        assert_eq!(plural(1, "item"), "1 item");
+        assert_eq!(plural(3, "item"), "3 items");
     }
 }
