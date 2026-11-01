@@ -19,6 +19,7 @@ pub enum Confirm {
     LowMemory { id: String, offline: bool, memory_mb: u32, free_mb: u64 },
     UncheckedPack { path: PathBuf, group: String, update: Option<String>, files: Vec<String> },
     DeleteWorld(Box<World>),
+    DeleteScreenshot(PathBuf),
     UploadLog { text: String },
 }
 
@@ -106,6 +107,14 @@ fn prompt(app: &App, confirm: &Confirm) -> Option<Prompt> {
             confirm: "Install anyway",
             enabled: true,
         },
+        Confirm::DeleteScreenshot(path) => Prompt {
+            title: "Delete screenshot",
+            body: format!("\"{}\" will be deleted.", path.file_name().unwrap_or_default().to_string_lossy()),
+            note: cannot_undo,
+            cancel: "Cancel",
+            confirm: "Delete",
+            enabled: true,
+        },
         Confirm::DeleteWorld(world) => Prompt {
             title: "Delete world",
             body: format!("\"{}\" will be deleted, along with everything built in it.", world.name),
@@ -152,6 +161,14 @@ fn apply(app: &mut App, confirm: Confirm) {
         Confirm::LowMemory { id, offline, .. } => app.launch_despite_low_memory(&id, offline),
         Confirm::UncheckedPack { path, group, update, .. } => app.import_pack(path, group, update),
         Confirm::UploadLog { text } => app.upload_log(text),
+        Confirm::DeleteScreenshot(path) => {
+            if let Err(e) = std::fs::remove_file(&path) {
+                app.errors.push(format!("Could not delete {}: {e}", path.display()));
+            }
+            if let Some(editor) = &mut app.editor {
+                editor.invalidate();
+            }
+        }
         Confirm::DeleteWorld(world) => {
             app.task(format!("Deleting {}", world.name), move |_, bus| async move {
                 tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&world.path)).await??;

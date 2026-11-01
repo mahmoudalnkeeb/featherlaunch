@@ -17,6 +17,7 @@ use crate::minecraft::instance::{Loader, World};
 use crate::minecraft::launch::LogLine;
 use crate::minecraft::logs::SavedLog;
 use crate::minecraft::meta::mojang::ManifestEntry;
+use crate::minecraft::servers::Server;
 use crate::minecraft::skin;
 use crate::modplatform::modrinth::{Category, ContentKind, LocalFile, SearchResponse, Update, Version};
 use crate::updater::Release;
@@ -39,6 +40,9 @@ pub enum Event {
     Files { inst: String, request: u64, files: Vec<LocalFile> },
     Worlds { inst: String, request: u64, worlds: Vec<World> },
     SavedLogs { inst: String, request: u64, logs: Vec<SavedLog> },
+    Servers { inst: String, request: u64, servers: Vec<Server> },
+    ServerStatus { ip: String, text: String },
+    Screenshots { inst: String, request: u64, shots: Vec<SavedLog> },
     SavedLog { inst: String, name: String, text: String },
     LogUploaded(String),
     DeviceCode(DeviceCode),
@@ -149,6 +153,21 @@ impl App {
                 Event::Worlds { inst, request, worlds } => {
                     if let Some(e) = self.editor.as_mut().filter(|e| e.instance_id() == inst) {
                         e.on_worlds(request, worlds);
+                    }
+                }
+                Event::Servers { inst, request, servers } => {
+                    if let Some(e) = self.editor.as_mut().filter(|e| e.instance_id() == inst) {
+                        e.on_servers(request, servers);
+                    }
+                }
+                Event::ServerStatus { ip, text } => {
+                    if let Some(e) = &mut self.editor {
+                        e.on_server_status(ip, text);
+                    }
+                }
+                Event::Screenshots { inst, request, shots } => {
+                    if let Some(e) = self.editor.as_mut().filter(|e| e.instance_id() == inst) {
+                        e.on_screenshots(request, shots);
                     }
                 }
                 Event::SavedLogs { inst, request, logs } => {
