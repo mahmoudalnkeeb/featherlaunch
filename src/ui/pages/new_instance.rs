@@ -349,14 +349,7 @@ fn import(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
         if widgets::pill(ui, Kind::Primary, None, "Choose .mrpack file…").clicked()
             && let Some(path) = rfd::FileDialog::new().add_filter("Modrinth modpack", &["mrpack"]).pick_file()
         {
-            let group = st.group.trim().to_string();
-            let bus = app.bus.clone();
-            app.spawn(async move {
-                let pack = path.clone();
-                let files = tokio::task::spawn_blocking(move || mrpack::unchecked_files(&pack)).await??;
-                bus.send(Event::PackRead { path, group, files });
-                Ok(())
-            });
+            app.read_pack(path, st.group.trim().to_string(), None);
             close = true;
         }
     });
@@ -364,11 +357,32 @@ fn import(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
 }
 
 impl App {
-    pub fn import_pack(&mut self, path: PathBuf, group: String) {
+    /// Checks a pack file for anything to confirm before it's used. `update` is the instance it
+    /// would update, when it isn't becoming a new one.
+    pub fn read_pack(&mut self, path: PathBuf, group: String, update: Option<String>) {
+        let bus = self.bus.clone();
+        self.spawn(async move {
+            let pack = path.clone();
+            let files = tokio::task::spawn_blocking(move || mrpack::unchecked_files(&pack)).await??;
+            bus.send(Event::PackRead { path, group, update, files });
+            Ok(())
+        });
+    }
+
+    pub fn import_pack(&mut self, path: PathBuf, group: String, update: Option<String>) {
         let parallel = self.cfg.parallel_downloads;
+        let target = update.and_then(|id| self.instance(&id).cloned());
         self.cancellable_task("Importing modpack", move |progress, bus| async move {
-            let inst = mrpack::import(path, group, parallel, &progress).await?;
-            bus.send(Event::InstancesChanged(Some(inst.id)));
+            match target {
+                Some(inst) => {
+                    let inst = mrpack::update(inst, path, None, parallel, &progress).await?;
+                    bus.send(Event::PackUpdated(inst.id));
+                }
+                None => {
+                    let inst = mrpack::import(path, group, parallel, &progress).await?;
+                    bus.send(Event::InstancesChanged(Some(inst.id)));
+                }
+            }
             Ok(())
         });
     }

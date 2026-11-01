@@ -119,6 +119,8 @@ pub struct Version {
     pub loaders: Vec<String>,
     #[serde(default)]
     pub game_versions: Vec<String>,
+    #[serde(default)]
+    pub changelog: Option<String>,
 }
 
 impl Version {
@@ -368,7 +370,7 @@ pub async fn install(inst: &Instance, kind: ContentKind, chosen: Version, meta: 
     Ok(installed)
 }
 
-fn remove_file_variants(path: &Path) {
+pub fn remove_file_variants(path: &Path) {
     let _ = std::fs::remove_file(path);
     let mut disabled = path.as_os_str().to_owned();
     disabled.push(".disabled");

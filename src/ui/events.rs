@@ -9,7 +9,7 @@ use eframe::egui;
 use tokio::sync::oneshot;
 
 use super::dialogs::Confirm;
-use super::{App, LauncherUpdate, SkinTex};
+use super::{App, LauncherUpdate, SkinTex, editor};
 use crate::config::OnLaunch;
 use crate::java::JavaInstall;
 use crate::minecraft::auth::{Account, DeviceCode};
@@ -32,7 +32,8 @@ pub enum Event {
     InstancesChanged(Option<String>),
     InstanceDeleted(String),
     InstanceIconChanged(String),
-    PackRead { path: PathBuf, group: String, files: Vec<String> },
+    PackRead { path: PathBuf, group: String, update: Option<String>, files: Vec<String> },
+    PackUpdated(String),
     Files { inst: String, request: u64, files: Vec<LocalFile> },
     Worlds { inst: String, request: u64, worlds: Vec<World> },
     SavedLogs { inst: String, request: u64, logs: Vec<SavedLog> },
@@ -109,11 +110,17 @@ impl App {
                         e.set_icon_stamp(stamp);
                     }
                 }
-                Event::PackRead { path, group, files } => {
+                Event::PackRead { path, group, update, files } => {
                     if files.is_empty() {
-                        self.import_pack(path, group);
+                        self.import_pack(path, group, update);
                     } else {
-                        self.confirm = Some(Confirm::UncheckedPack { path, group, files });
+                        self.confirm = Some(Confirm::UncheckedPack { path, group, update, files });
+                    }
+                }
+                Event::PackUpdated(id) => {
+                    self.reload_instances(Some(id.clone()));
+                    if self.editor.as_ref().is_some_and(|e| e.instance_id() == id) {
+                        self.editor = self.instance(&id).map(|i| editor::Editor::new(i.clone(), editor::Tab::Settings));
                     }
                 }
                 Event::Files { inst, request, files } => {
@@ -202,12 +209,14 @@ impl App {
                     self.new_instance.browser.on_versions(&project, &versions);
                     if let Some(e) = &mut self.editor {
                         e.browser.on_versions(&project, &versions);
+                        e.on_pack_versions(&project, versions);
                     }
                 }
                 Event::VersionsFailed(project) => {
                     self.new_instance.browser.on_versions_failed(&project);
                     if let Some(e) = &mut self.editor {
                         e.browser.on_versions_failed(&project);
+                        e.on_pack_versions_failed(&project);
                     }
                 }
                 Event::ContentChanged => {
