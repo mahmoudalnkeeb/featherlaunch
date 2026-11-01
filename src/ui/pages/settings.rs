@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, RichText};
 
-use crate::config::{Config, GameWindow, LOW_END_JVM_ARGS, OnLaunch};
+use crate::config::{Config, GameWindow, LOW_END_JVM_ARGS, LaunchHooks, OnLaunch, UpdateChannel};
 use crate::paths;
 use crate::ui::glyph::Glyph;
 use crate::ui::widgets::{self, Kind};
@@ -27,6 +27,13 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                 widgets::slider(ui, &mut draft.min_memory_mb, 256..=8192, 256.0, " MB");
             });
             window_rows(ui, &mut draft.window);
+            widgets::form_row(ui, "Discord", |ui| {
+                ui.horizontal(|ui| {
+                    ui.set_min_height(theme::H_MD);
+                    widgets::toggle_labeled(ui, &mut draft.discord_presence, "Show what I'm playing on my profile");
+                });
+                widgets::hint(ui, "Shows the Minecraft version, loader and modpack. Anyone who can see your profile can see it.");
+            });
             widgets::form_row(ui, "Low memory", |ui| {
                 ui.horizontal(|ui| {
                     ui.set_min_height(theme::H_MD);
@@ -85,9 +92,46 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                 }
             });
 
+            widgets::form_section(ui, "Advanced", false);
+            hook_rows(ui, &mut draft.hooks);
+
+            if cfg!(target_os = "linux") {
+                widgets::form_section(ui, "Linux", false);
+                let linux = &mut draft.linux;
+                let row = |ui: &mut egui::Ui, label: &str, text: &str, on: &mut bool| {
+                    widgets::form_row(ui, label, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.set_min_height(theme::H_MD);
+                            widgets::toggle_labeled(ui, on, text);
+                        });
+                    });
+                };
+                row(ui, "GameMode", "Ask GameMode to tune the system while playing", &mut linux.gamemode);
+                row(ui, "MangoHud", "Show the MangoHud overlay", &mut linux.mangohud);
+                row(ui, "Graphics", "Use the discrete GPU", &mut linux.discrete_gpu);
+                row(ui, "GLFW", "Use the system's GLFW, which can fix Wayland problems", &mut linux.system_glfw);
+                row(ui, "OpenAL", "Use the system's OpenAL", &mut linux.system_openal);
+            }
+
             widgets::form_section(ui, "Downloads", false);
             widgets::form_row(ui, "Parallel downloads", |ui| {
                 widgets::slider(ui, &mut draft.parallel_downloads, 1..=16, 1.0, "");
+            });
+
+            widgets::form_row(ui, "Mod updates", |ui| {
+                let mut channel = draft.update_channel;
+                let items = [
+                    (UpdateChannel::All, "All versions"),
+                    (UpdateChannel::Beta, "Stable and beta"),
+                    (UpdateChannel::Release, "Stable only"),
+                ];
+                widgets::segmented(ui, &mut channel, &items);
+                draft.update_channel = channel;
+            });
+
+            widgets::form_row(ui, "Proxy", |ui| {
+                ui.add(widgets::input(&mut draft.proxy, "None").desired_width(ui.available_width()));
+                widgets::hint(ui, "Like http://host:8080. Applies after a restart, to the launcher but not the game.");
             });
 
             widgets::form_section(ui, "Storage", false);
@@ -105,6 +149,17 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                         app.open(paths::java());
                     }
                 });
+            });
+
+            widgets::form_row(ui, "Instances folder", |ui| {
+                let path = paths::instances().to_string_lossy().into_owned();
+                widgets::line_tip(ui, &path, theme::label(), theme::TEXT, theme::H_MD);
+                if widgets::pill_sized(ui, Kind::Secondary, None, "Move…", theme::H_SM).clicked()
+                    && let Some(dir) = rfd::FileDialog::new().pick_folder()
+                {
+                    app.move_instances(dir);
+                }
+                widgets::hint(ui, "Pick an empty folder, for example on a bigger drive.");
             });
 
             widgets::form_section(ui, "Updates", false);
@@ -152,11 +207,30 @@ pub fn window_rows(ui: &mut egui::Ui, window: &mut GameWindow) {
     });
 }
 
+/// Commands around the game, shared with the instance page.
+pub fn hook_rows(ui: &mut egui::Ui, hooks: &mut LaunchHooks) {
+    let row = |ui: &mut egui::Ui, label: &str, hint: &str, text: &mut String| {
+        widgets::form_row(ui, label, |ui| {
+            ui.add(widgets::input(text, hint).desired_width(ui.available_width()));
+        });
+    };
+    row(ui, "Wrapper command", "None", &mut hooks.wrapper);
+    row(ui, "Before launching", "None", &mut hooks.pre_launch);
+    row(ui, "After exiting", "None", &mut hooks.post_exit);
+    widgets::form_row(ui, "Environment", |ui| {
+        widgets::multiline(ui, &mut hooks.env);
+        widgets::hint(ui, "One NAME=value per line.");
+    });
+}
+
 fn save_bar(app: &mut App, ui: &mut egui::Ui, draft: &mut Config) {
     widgets::save_bar(ui, "settings-save", "Unsaved changes", |ui| {
         if widgets::pill(ui, Kind::Primary, None, "Save").clicked() {
             match draft.save() {
                 Ok(()) => {
+                    if !draft.discord_presence {
+                        app.discord.set(None);
+                    }
                     app.cfg = draft.clone();
                     app.notify("Settings saved");
                 }

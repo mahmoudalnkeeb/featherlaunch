@@ -22,7 +22,14 @@ pub struct SavedLog {
     pub modified: Option<SystemTime>,
 }
 
-fn files_in(dir: &Path, wanted: fn(&str) -> bool) -> impl Iterator<Item = SavedLog> {
+/// The files in `dir` whose names pass `wanted`, newest first.
+pub fn files_in(dir: &Path, wanted: fn(&str) -> bool) -> Vec<SavedLog> {
+    let mut files: Vec<SavedLog> = named_files(dir, wanted).collect();
+    files.sort_by_key(|f| std::cmp::Reverse(f.modified));
+    files
+}
+
+fn named_files(dir: &Path, wanted: fn(&str) -> bool) -> impl Iterator<Item = SavedLog> {
     std::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(move |e| {
         let name = e.file_name().into_string().ok().filter(|n| wanted(n))?;
         Some(SavedLog { name, path: e.path(), modified: e.metadata().and_then(|m| m.modified()).ok() })
@@ -31,8 +38,8 @@ fn files_in(dir: &Path, wanted: fn(&str) -> bool) -> impl Iterator<Item = SavedL
 
 /// The game logs and crash reports in a game folder, newest first.
 pub fn list(game: &Path) -> Vec<SavedLog> {
-    let mut logs: Vec<SavedLog> = files_in(&game.join("logs"), |n| n.ends_with(".log") || n.ends_with(".log.gz"))
-        .chain(files_in(&game.join("crash-reports"), |n| n.ends_with(".txt")))
+    let mut logs: Vec<SavedLog> = named_files(&game.join("logs"), |n| n.ends_with(".log") || n.ends_with(".log.gz"))
+        .chain(named_files(&game.join("crash-reports"), |n| n.ends_with(".txt")))
         .collect();
     logs.sort_by_key(|l| std::cmp::Reverse(l.modified));
     logs

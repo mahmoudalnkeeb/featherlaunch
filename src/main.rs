@@ -2,9 +2,11 @@
 // No console window in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cli;
 mod config;
 #[cfg(target_os = "linux")]
 mod desktop_entry;
+mod discord;
 mod icons;
 mod java;
 mod log;
@@ -12,6 +14,7 @@ mod minecraft;
 mod modplatform;
 mod net;
 mod paths;
+mod shortcut;
 mod sysmem;
 mod tasks;
 mod ui;
@@ -20,6 +23,10 @@ mod updater;
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
+    let args = cli::parse(std::env::args().skip(1));
+    if let Some(dir) = &args.dir {
+        paths::set_root(dir.clone());
+    }
     if let Err(e) = paths::ensure_dirs() {
         eprintln!("cannot create the data folder {}: {e}", paths::root().display());
     }
@@ -45,5 +52,5 @@ fn main() -> eframe::Result<()> {
             .with_resizable(true),
         ..Default::default()
     };
-    eframe::run_native("FeatherLaunch", options, Box::new(move |cc| Ok(Box::new(ui::App::new(cc, handle)))))
+    eframe::run_native("FeatherLaunch", options, Box::new(move |cc| Ok(Box::new(ui::App::new(cc, handle, args)))))
 }

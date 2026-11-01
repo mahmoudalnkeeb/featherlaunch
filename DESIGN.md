@@ -146,12 +146,13 @@ Quilt `#9A6BD0`, Forge `#5B7CB8`, NeoForge `#E08A45`.
   up with the bar. An instance hidden by the search or filters leaves the bar too.
 - **Instance page:** opens in place of the library, with a back button (or Esc), a one-row header
   with icon and name, underlined tabs (Mods, Resource packs, Shaders, Worlds, Log, Settings, Export) and
-  the Play button. "Manage" opens Mods, or Worlds for an instance with no mod loader. The editor
+  the Play button. Worlds has a segmented control for Worlds, Servers and Screenshots, so the tabs still fit the smallest window. "Manage" opens Mods, or Worlds for an instance with no mod loader. The editor
   and console are pages, not floating windows.
 - **New instance page:** a segmented control picks Custom version, Modrinth modpacks or Import. Custom has the version list on the left, filling the height, and the form on the right,
   with the latest release already picked.
 - **Modrinth search (`src/ui/pages/project.rs`):** Browse and Modpacks share a results list and a detail
-  pane with the install controls in a footer that stays on screen. Under 640 px the detail replaces
+  pane with the install controls in a footer that stays on screen. Sort and category sit in the search
+  row, so the list keeps its height. Under 640 px the detail replaces
   the list, with a "Back to results" button.
 - **Forms:** a 160 px label column and a control (`widgets::form_row`), with sections under a
   caption. A save bar is fixed to the bottom only while the form differs from what is saved.
@@ -161,7 +162,7 @@ Quilt `#9A6BD0`, Forge `#5B7CB8`, NeoForge `#E08A45`.
 - **Dialogs (modals):** only for short blocking steps: the Microsoft sign-in code, errors, and
   confirmations before something can't be undone (`src/ui/dialogs.rs`): deleting an instance, a
   world or a file, removing an account, discarding edits, launching on low memory, installing a pack
-  with unreviewed mods, and uploading a log. They are centered `SURFACE` boxes with `R_LG`, a 1 px `BORDER` outline and a black 55%
+  with unreviewed mods, uploading a log, and choosing a pack's optional files. They are centered `SURFACE` boxes with `R_LG`, a 1 px `BORDER` outline and a black 55%
   backdrop. Each has a title bar strip on `BG` (title left, ✕ right) separated from the body by
   a `BORDER` line; the body has 20 px padding. Esc or the ✕ closes them; a backdrop click doesn't, so drafts are never lost.
 - **Toasts:** short status messages appear bottom-right for 4 seconds, then disappear. Failures

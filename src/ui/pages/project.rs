@@ -5,7 +5,7 @@
 
 use eframe::egui::{self, Layout, Rect, RichText, Sense, Ui, UiBuilder, vec2};
 
-use crate::modplatform::modrinth::{SearchHit, SearchResponse, Version};
+use crate::modplatform::modrinth::{SearchFilter, SearchHit, SearchResponse, Sort, Version, category_label};
 use crate::ui::icons::Icons;
 use crate::ui::theme;
 use crate::ui::widgets::{self, Kind};
@@ -15,6 +15,8 @@ const PAGE_SIZE: u64 = 20;
 const DETAIL_WIDTH: f32 = 300.0;
 const TWO_PANES: f32 = 640.0;
 pub const INSTALL_WIDTH: f32 = 72.0;
+const FILTER_WIDTH: f32 = 112.0;
+const NOTE_WIDTH: f32 = 120.0;
 
 #[derive(Default)]
 pub struct Browser {
@@ -28,6 +30,9 @@ pub struct Browser {
     pub versions: Option<Vec<Version>>,
     pub versions_failed: bool,
     pub version_idx: usize,
+    pub filter: SearchFilter,
+    /// Names of the categories that can be picked.
+    pub categories: Vec<String>,
 }
 
 impl Browser {
@@ -121,8 +126,9 @@ pub fn show(
         return request;
     }
 
+    let before = b.filter.clone();
     ui.horizontal(|ui| {
-        let width = (ui.available_width() / 2.0).clamp(180.0, 300.0);
+        let width = (ui.available_width() * 0.32).clamp(150.0, 300.0);
         let r = widgets::search(ui, &mut b.query, hint, width);
         if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             request = Some(Request::Search(0));
@@ -130,11 +136,31 @@ pub fn show(
         if widgets::pill(ui, Kind::Secondary, None, "Search").clicked() {
             request = Some(Request::Search(0));
         }
+        widgets::combo("project-sort", b.filter.sort.label(), FILTER_WIDTH).show_ui(ui, |ui| {
+            for sort in Sort::ALL {
+                ui.selectable_value(&mut b.filter.sort, sort, sort.label());
+            }
+        });
+        if !b.categories.is_empty() {
+            let selected = b.filter.category.as_deref().map_or("All categories".to_string(), category_label);
+            widgets::combo("project-category", selected, FILTER_WIDTH).show_ui(ui, |ui| {
+                ui.selectable_value(&mut b.filter.category, None, "All categories");
+                for name in &b.categories {
+                    ui.selectable_value(&mut b.filter.category, Some(name.clone()), category_label(name));
+                }
+            });
+        }
         if b.searching {
             ui.add(egui::Spinner::new().color(theme::ACCENT));
         }
-        ui.label(RichText::new(note).font(theme::label()).color(theme::TEXT_MUTED));
+        // Left out where the window is too narrow for it; the list is already filtered.
+        if ui.available_width() >= NOTE_WIDTH {
+            ui.label(RichText::new(note).font(theme::label()).color(theme::TEXT_MUTED));
+        }
     });
+    if b.filter != before {
+        request = Some(Request::Search(0));
+    }
     ui.add_space(theme::S3);
 
     let area = ui.available_rect_before_wrap();

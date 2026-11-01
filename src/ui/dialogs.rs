@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use eframe::egui::{self, Color32, RichText};
+use tokio::sync::oneshot;
 
 use super::widgets::{self, Kind};
 use super::{App, Event, Page, theme};
@@ -18,7 +19,14 @@ pub enum Confirm {
     LowMemory { id: String, offline: bool, memory_mb: u32, free_mb: u64 },
     UncheckedPack { path: PathBuf, group: String, update: Option<String>, files: Vec<String> },
     DeleteWorld(Box<World>),
+    DeleteScreenshot(PathBuf),
     UploadLog { text: String },
+}
+
+/// A pack's optional files, waiting for the player to choose. Dropping it cancels the install.
+pub struct OptionalFiles {
+    pub files: Vec<(String, bool)>,
+    pub reply: oneshot::Sender<Vec<String>>,
 }
 
 /// How many paths a dialog names before summing up the rest.
@@ -99,6 +107,14 @@ fn prompt(app: &App, confirm: &Confirm) -> Option<Prompt> {
             confirm: "Install anyway",
             enabled: true,
         },
+        Confirm::DeleteScreenshot(path) => Prompt {
+            title: "Delete screenshot",
+            body: format!("\"{}\" will be deleted.", path.file_name().unwrap_or_default().to_string_lossy()),
+            note: cannot_undo,
+            cancel: "Cancel",
+            confirm: "Delete",
+            enabled: true,
+        },
         Confirm::DeleteWorld(world) => Prompt {
             title: "Delete world",
             body: format!("\"{}\" will be deleted, along with everything built in it.", world.name),
@@ -145,6 +161,14 @@ fn apply(app: &mut App, confirm: Confirm) {
         Confirm::LowMemory { id, offline, .. } => app.launch_despite_low_memory(&id, offline),
         Confirm::UncheckedPack { path, group, update, .. } => app.import_pack(path, group, update),
         Confirm::UploadLog { text } => app.upload_log(text),
+        Confirm::DeleteScreenshot(path) => {
+            if let Err(e) = std::fs::remove_file(&path) {
+                app.errors.push(format!("Could not delete {}: {e}", path.display()));
+            }
+            if let Some(editor) = &mut app.editor {
+                editor.invalidate();
+            }
+        }
         Confirm::DeleteWorld(world) => {
             app.task(format!("Deleting {}", world.name), move |_, bus| async move {
                 tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&world.path)).await??;
@@ -152,6 +176,29 @@ fn apply(app: &mut App, confirm: Confirm) {
                 Ok(())
             });
         }
+    }
+}
+
+pub fn optional_window(app: &mut App, ctx: &egui::Context) {
+    let Some(pending) = app.optional.first_mut() else { return };
+    let mut install = false;
+    let (_, closed) = widgets::dialog(ctx, "optional-files", "Optional files", 460.0, |ui| {
+        ui.label(RichText::new("This pack has extras you can leave out. Heavy ones can slow older PCs.").color(theme::TEXT));
+        ui.add_space(theme::S2);
+        egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+            for (path, on) in &mut pending.files {
+                widgets::toggle_labeled(ui, on, path.rsplit('/').next().unwrap_or(path));
+            }
+        });
+        widgets::dialog_buttons(ui, |ui| {
+            install = widgets::pill(ui, Kind::Primary, None, "Install").clicked();
+        });
+    });
+    if install {
+        let pending = app.optional.remove(0);
+        let _ = pending.reply.send(pending.files.into_iter().filter(|(_, on)| *on).map(|(path, _)| path).collect());
+    } else if closed {
+        app.optional.remove(0);
     }
 }
 

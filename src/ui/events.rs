@@ -8,17 +8,18 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use tokio::sync::oneshot;
 
-use super::dialogs::Confirm;
+use super::dialogs::{Confirm, OptionalFiles};
 use super::{App, LauncherUpdate, SkinTex, editor};
 use crate::config::OnLaunch;
 use crate::java::JavaInstall;
-use crate::minecraft::auth::{Account, DeviceCode};
+use crate::minecraft::auth::{Account, Cape, DeviceCode};
 use crate::minecraft::instance::{Loader, World};
 use crate::minecraft::launch::LogLine;
 use crate::minecraft::logs::SavedLog;
 use crate::minecraft::meta::mojang::ManifestEntry;
+use crate::minecraft::servers::Server;
 use crate::minecraft::skin;
-use crate::modplatform::modrinth::{ContentKind, LocalFile, SearchResponse, Update, Version};
+use crate::modplatform::modrinth::{Category, ContentKind, LocalFile, SearchResponse, Update, Version};
 use crate::updater::Release;
 
 pub enum Event {
@@ -31,17 +32,23 @@ pub enum Event {
     LoaderVersionsFailed { loader: Loader, mc: String },
     InstancesChanged(Option<String>),
     InstanceDeleted(String),
+    InstancesMoved(PathBuf),
     InstanceIconChanged(String),
     PackRead { path: PathBuf, group: String, update: Option<String>, files: Vec<String> },
     PackUpdated(String),
+    PackOptional { files: Vec<String>, reply: oneshot::Sender<Vec<String>> },
     Files { inst: String, request: u64, files: Vec<LocalFile> },
     Worlds { inst: String, request: u64, worlds: Vec<World> },
     SavedLogs { inst: String, request: u64, logs: Vec<SavedLog> },
+    Servers { inst: String, request: u64, servers: Vec<Server> },
+    ServerStatus { ip: String, text: String },
+    Screenshots { inst: String, request: u64, shots: Vec<SavedLog> },
     SavedLog { inst: String, name: String, text: String },
     LogUploaded(String),
     DeviceCode(DeviceCode),
     LoginFinished,
     Account(Account),
+    Capes { account: String, capes: Vec<Cape> },
     Skin { id: String, front: Vec<u8>, head: Vec<u8> },
     Log { inst: String, line: LogLine },
     GameStarted { inst: String, kill: oneshot::Sender<()> },
@@ -51,6 +58,7 @@ pub enum Event {
     Versions { project: String, versions: Vec<Version> },
     VersionsFailed(String),
     ContentChanged,
+    Categories(Vec<Category>),
     Updates(Vec<Update>),
     Java(Vec<JavaInstall>),
     Icon { key: String, image: Option<crate::icons::Decoded> },
@@ -99,6 +107,18 @@ impl App {
                     self.loader_failed.insert((loader, mc));
                 }
                 Event::InstancesChanged(select) => self.reload_instances(select),
+                Event::InstancesMoved(dir) => {
+                    crate::paths::set_instances(Some(dir.clone()));
+                    self.cfg.instances_dir = Some(dir.to_string_lossy().into_owned());
+                    if let Some(draft) = &mut self.settings_draft {
+                        draft.instances_dir = self.cfg.instances_dir.clone();
+                    }
+                    if let Err(e) = self.cfg.save() {
+                        self.errors.push(format!("Saving settings failed: {e:#}"));
+                    }
+                    self.reload_instances(None);
+                    self.notify("Instances moved");
+                }
                 Event::InstanceDeleted(id) => {
                     self.deleting.remove(&id);
                     self.reload_instances(None);
@@ -117,6 +137,9 @@ impl App {
                         self.confirm = Some(Confirm::UncheckedPack { path, group, update, files });
                     }
                 }
+                Event::PackOptional { files, reply } => {
+                    self.optional.push(OptionalFiles { files: files.into_iter().map(|f| (f, true)).collect(), reply });
+                }
                 Event::PackUpdated(id) => {
                     self.reload_instances(Some(id.clone()));
                     if self.editor.as_ref().is_some_and(|e| e.instance_id() == id) {
@@ -131,6 +154,21 @@ impl App {
                 Event::Worlds { inst, request, worlds } => {
                     if let Some(e) = self.editor.as_mut().filter(|e| e.instance_id() == inst) {
                         e.on_worlds(request, worlds);
+                    }
+                }
+                Event::Servers { inst, request, servers } => {
+                    if let Some(e) = self.editor.as_mut().filter(|e| e.instance_id() == inst) {
+                        e.on_servers(request, servers);
+                    }
+                }
+                Event::ServerStatus { ip, text } => {
+                    if let Some(e) = &mut self.editor {
+                        e.on_server_status(ip, text);
+                    }
+                }
+                Event::Screenshots { inst, request, shots } => {
+                    if let Some(e) = self.editor.as_mut().filter(|e| e.instance_id() == inst) {
+                        e.on_screenshots(request, shots);
                     }
                 }
                 Event::SavedLogs { inst, request, logs } => {
@@ -165,6 +203,7 @@ impl App {
                     self.accounts.upsert(account);
                     self.save_accounts();
                 }
+                Event::Capes { account, capes } => self.accounts_ui.on_capes(account, capes),
                 Event::Skin { id, front, head } => {
                     let tex = |name: String, size: [usize; 2], rgba: &[u8]| {
                         ctx.load_texture(name, egui::ColorImage::from_rgba_unmultiplied(size, rgba), egui::TextureOptions::NEAREST)
@@ -184,6 +223,7 @@ impl App {
                     {
                         self.errors.push(format!("Saving {} failed: {e:#}", i.name));
                     }
+                    self.show_on_discord(&inst);
                     match self.cfg.on_launch {
                         OnLaunch::KeepOpen => {}
                         OnLaunch::Minimize => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
@@ -224,6 +264,7 @@ impl App {
                         e.invalidate();
                     }
                 }
+                Event::Categories(list) => self.categories = list,
                 Event::Updates(updates) => {
                     if let Some(e) = &mut self.editor {
                         e.on_updates(updates);

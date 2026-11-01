@@ -8,11 +8,13 @@ use std::sync::{Arc, mpsc};
 use anyhow::Context as _;
 use eframe::egui;
 
+use crate::cli::Args;
 use crate::config::Config;
 use crate::java::{self, JavaInstall};
 use crate::minecraft::auth::{self, AccountKind, AccountStore, DeviceCode};
 use crate::minecraft::instance::{self, Instance, Loader};
 use crate::minecraft::meta::mojang::ManifestEntry;
+use crate::modplatform::modrinth::Category;
 use crate::tasks::Progress;
 use crate::updater;
 
@@ -71,6 +73,8 @@ pub struct App {
     loader_versions: HashMap<(Loader, String), Vec<String>>,
     loader_requested: HashSet<(Loader, String)>,
     loader_failed: HashSet<(Loader, String)>,
+    categories: Vec<Category>,
+    categories_requested: bool,
     java_list: Vec<JavaInstall>,
     device_code: Option<DeviceCode>,
     login_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -80,19 +84,26 @@ pub struct App {
     accounts_ui: accounts::AccountsUi,
     settings_draft: Option<Config>,
     confirm: Option<dialogs::Confirm>,
+    optional: Vec<dialogs::OptionalFiles>,
     deleting: HashSet<String>,
+    /// Where the launch asked for on the command line goes, for that launch only.
+    join_once: Option<(Option<String>, Option<String>)>,
+    discord: crate::discord::Presence,
     launcher_update: LauncherUpdate,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext, rt: tokio::runtime::Handle) -> Self {
+    pub fn new(cc: &eframe::CreationContext, rt: tokio::runtime::Handle, args: Args) -> Self {
         theme::apply(&cc.egui_ctx);
         let (tx, rx) = mpsc::channel();
+        let cfg = Config::load();
+        crate::paths::set_instances(cfg.instances_dir.as_ref().map(std::path::PathBuf::from));
+        crate::net::set_proxy(&cfg.proxy);
         let mut app = Self {
             rt,
             bus: Bus { tx, ctx: cc.egui_ctx.clone() },
             rx,
-            cfg: Config::load(),
+            cfg,
             accounts: AccountStore::load(),
             instances: instance::list(),
             selected: None,
@@ -111,6 +122,8 @@ impl App {
             loader_versions: HashMap::new(),
             loader_requested: HashSet::new(),
             loader_failed: HashSet::new(),
+            categories: Vec::new(),
+            categories_requested: false,
             java_list: Vec::new(),
             device_code: None,
             login_cancel: None,
@@ -120,12 +133,33 @@ impl App {
             accounts_ui: Default::default(),
             settings_draft: None,
             confirm: None,
+            optional: Vec::new(),
             deleting: HashSet::new(),
+            join_once: None,
+            discord: Default::default(),
             launcher_update: Default::default(),
         };
         app.selected = app.instances.first().map(|i| i.id.clone());
         app.startup();
+        app.follow_args(args);
         app
+    }
+
+    fn follow_args(&mut self, args: Args) {
+        if let Some(profile) = args.profile {
+            match self.accounts.accounts.iter().find(|a| a.name.eq_ignore_ascii_case(&profile)) {
+                Some(account) => self.accounts.selected = Some(account.id.clone()),
+                None => self.warn(format!("No account named {profile}")),
+            }
+        }
+        let Some(target) = args.launch else { return };
+        let Some(id) = self.instances.iter().find(|i| i.id == target || i.name == target).map(|i| i.id.clone()) else {
+            self.warn(format!("No instance named {target}"));
+            return;
+        };
+        self.join_once = Some((args.server, args.world));
+        self.selected = Some(id.clone());
+        self.launch(&id, args.offline);
     }
 
     fn startup(&mut self) {
@@ -239,6 +273,21 @@ impl App {
         });
     }
 
+    /// Moves every instance to `to`. Nothing may be using them meanwhile, so this needs an idle launcher.
+    fn move_instances(&mut self, to: std::path::PathBuf) {
+        if !self.running.is_empty() || self.tasks.iter().any(|t| !t.snapshot().finished()) {
+            self.warn("Wait for running games and tasks to finish first.");
+            return;
+        }
+        let from = crate::paths::instances();
+        self.task("Moving instances", move |_, bus| async move {
+            let target = to.clone();
+            tokio::task::spawn_blocking(move || crate::paths::move_dir(&from, &target)).await??;
+            bus.send(Event::InstancesMoved(to));
+            Ok(())
+        });
+    }
+
     fn refresh_java(&self) {
         let bus = self.bus.clone();
         self.rt.spawn_blocking(move || bus.send(Event::Java(java::detect())));
@@ -303,6 +352,7 @@ impl eframe::App for App {
         main_view::show(self, ctx);
         accounts::device_code_window(self, ctx);
         dialogs::window(self, ctx);
+        dialogs::optional_window(self, ctx);
         self.errors_window(ctx);
         chrome::frame_edges(ctx);
         self.fetch_wanted_icons();

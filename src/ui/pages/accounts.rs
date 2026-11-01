@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Context as _;
 use eframe::egui::{self, CornerRadius, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, UiBuilder, vec2};
 
-use crate::minecraft::auth::{self, Account, AccountKind};
+use crate::minecraft::auth::{self, Account, AccountKind, Cape};
+use crate::minecraft::logs;
+use crate::paths;
 use crate::ui::dialogs::Confirm;
 use crate::ui::glyph::{self, Glyph};
 use crate::ui::widgets::{self, Kind};
@@ -16,6 +18,15 @@ use crate::ui::{App, Event, theme};
 #[derive(Default)]
 pub struct AccountsUi {
     slim: bool,
+    /// The account whose capes were last asked for, and what came back.
+    capes_asked: Option<String>,
+    capes: Option<(String, Vec<Cape>)>,
+}
+
+impl AccountsUi {
+    pub fn on_capes(&mut self, account: String, capes: Vec<Cape>) {
+        self.capes = Some((account, capes));
+    }
 }
 
 const SKIN_WIDTH: f32 = 200.0;
@@ -110,8 +121,77 @@ fn skin(app: &mut App, ui: &mut egui::Ui) {
         if widgets::pill(ui, Kind::Secondary, None, "Change skin…").clicked()
             && let Some(path) = rfd::FileDialog::new().add_filter("Skin", &["png"]).pick_file()
         {
-            change_skin(app, account, path, app.accounts_ui.slim);
+            change_skin(app, account.clone(), path, app.accounts_ui.slim);
         }
+        saved_skins(app, ui, &account);
+        capes(app, ui, &account);
+    }
+}
+
+fn saved_skins(app: &mut App, ui: &mut egui::Ui, account: &Account) {
+    ui.add_space(theme::S1);
+    let mut chosen = None;
+    widgets::combo("saved-skins", "Saved skins", SKIN_WIDTH - widgets::INPUT_MARGIN).show_ui(ui, |ui| {
+        let saved = logs::files_in(&paths::skins(), |n| n.ends_with(".png"));
+        if saved.is_empty() {
+            ui.label(RichText::new("None yet").color(theme::TEXT_MUTED));
+        }
+        for skin in saved {
+            if ui.selectable_label(false, skin.name.trim_end_matches(".png")).clicked() {
+                chosen = Some(skin.path);
+            }
+        }
+    });
+    if let Some(path) = chosen {
+        change_skin(app, account.clone(), path, app.accounts_ui.slim);
+    }
+    ui.add_space(theme::S1);
+    if widgets::pill(ui, Kind::Ghost, None, "Add to saved…").clicked()
+        && let Some(path) = rfd::FileDialog::new().add_filter("Skin", &["png"]).pick_file()
+        && let Some(name) = path.file_name()
+    {
+        let saved = std::fs::create_dir_all(paths::skins()).and_then(|()| std::fs::copy(&path, paths::skins().join(name)));
+        if let Err(e) = saved {
+            app.errors.push(format!("Could not save the skin: {e}"));
+        }
+    }
+}
+
+fn capes(app: &mut App, ui: &mut egui::Ui, account: &Account) {
+    if app.accounts_ui.capes_asked.as_deref() != Some(&account.id) {
+        app.accounts_ui.capes_asked = Some(account.id.clone());
+        let (account, bus) = (account.clone(), app.bus.clone());
+        // Quietly, because this page opens fine offline; the menu just stays hidden.
+        app.rt.spawn(async move {
+            match auth::capes(account).await {
+                Ok((account, capes)) => bus.send(Event::Capes { account: account.id, capes }),
+                Err(e) => crate::log::error(&format!("Loading capes failed: {e:#}")),
+            }
+        });
+    }
+    let Some((_, capes)) = app.accounts_ui.capes.clone().filter(|(id, list)| *id == account.id && !list.is_empty()) else { return };
+    ui.add_space(theme::S1);
+    let current = capes.iter().find(|c| c.state == "ACTIVE");
+    let mut picked = None;
+    widgets::combo("cape", current.map_or("No cape", |c| c.alias.as_str()), SKIN_WIDTH - widgets::INPUT_MARGIN).show_ui(ui, |ui| {
+        if ui.selectable_label(current.is_none(), "No cape").clicked() {
+            picked = Some(None);
+        }
+        for cape in &capes {
+            if ui.selectable_label(cape.state == "ACTIVE", &cape.alias).clicked() {
+                picked = Some(Some(cape.id.clone()));
+            }
+        }
+    });
+    if let Some(cape) = picked {
+        let account = account.clone();
+        app.task("Changing cape", move |_, bus| async move {
+            let account = auth::ensure_token(account).await?;
+            auth::set_cape(&account, cape.as_deref()).await?;
+            let (account, capes) = auth::capes(account).await?;
+            bus.send(Event::Capes { account: account.id, capes });
+            Ok(())
+        });
     }
 }
 

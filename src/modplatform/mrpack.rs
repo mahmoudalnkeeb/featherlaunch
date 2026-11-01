@@ -4,9 +4,11 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use tokio::sync::oneshot;
 
 use crate::minecraft::instance::{Instance, Loader, PackSource};
 use crate::modplatform::modrinth::{self, ContentIndex, ContentKind, Version};
@@ -40,6 +42,16 @@ pub struct PackFile {
 pub struct PackEnv {
     #[serde(default)]
     pub client: String,
+}
+
+/// Asks the player which of a pack's optional files to install. Dropping the reply cancels.
+pub type AskOptional = Arc<dyn Fn(Vec<String>) -> oneshot::Receiver<Vec<String>> + Send + Sync>;
+
+/// How packs get installed.
+#[derive(Clone)]
+pub struct PackOptions {
+    pub parallel: usize,
+    pub ask_optional: AskOptional,
 }
 
 /// The only hosts the Modrinth pack format lets files be downloaded from.
@@ -123,6 +135,11 @@ fn pack_paths(index: &PackIndex, pack: &Path) -> Result<Vec<String>> {
     Ok(paths)
 }
 
+/// Keeps the optional files named in `chosen`.
+fn keep_chosen(index: &mut PackIndex, optional: &[String], chosen: &[String]) {
+    index.files.retain(|f| !optional.contains(&f.path) || chosen.contains(&f.path));
+}
+
 fn wanted(file: &PackFile) -> bool {
     !file.env.as_ref().is_some_and(|e| e.client == "unsupported")
 }
@@ -195,11 +212,11 @@ pub async fn install_from_modrinth(
     title: &str,
     icon_url: Option<&str>,
     group: String,
-    parallel: usize,
+    options: &PackOptions,
     progress: &Progress,
 ) -> Result<Instance> {
     let (path, _pack_file) = download_pack(version, title, progress).await?;
-    let mut inst = import(path, group, parallel, progress).await?;
+    let mut inst = import(path, group, options, progress).await?;
     if let Some(pack) = &mut inst.pack {
         pack.title = title.to_string();
         pack.project_id = Some(version.project_id.clone());
@@ -214,9 +231,9 @@ pub async fn install_from_modrinth(
     Ok(inst)
 }
 
-pub async fn import(pack: PathBuf, group: String, parallel: usize, progress: &Progress) -> Result<Instance> {
+pub async fn import(pack: PathBuf, group: String, options: &PackOptions, progress: &Progress) -> Result<Instance> {
     progress.set_label("Reading modpack");
-    let (index, files) = read_pack(&pack).await?;
+    let (index, files) = read_pack(&pack, options).await?;
     let (mc, loader, loader_version) = loader_of(&index.dependencies)?;
     let name = if index.version_id.is_empty() { index.name.clone() } else { format!("{} {}", index.name, index.version_id) };
     let source = PackSource { title: index.name.clone(), version: index.version_id.clone(), files, ..Default::default() };
@@ -227,7 +244,7 @@ pub async fn import(pack: PathBuf, group: String, parallel: usize, progress: &Pr
 
     let items = downloads(&index, &game_dir)?;
     progress.set_label(format!("Downloading {} modpack files", items.len()));
-    net::download_all(items, parallel, progress).await?;
+    net::download_all(items, options.parallel, progress).await?;
 
     progress.set_label("Applying modpack overrides");
     // Extraction runs on a blocking thread that a cancel would not stop.
@@ -236,11 +253,19 @@ pub async fn import(pack: PathBuf, group: String, parallel: usize, progress: &Pr
     Ok(partial.keep())
 }
 
-async fn read_pack(pack: &Path) -> Result<(PackIndex, Vec<String>)> {
-    let pack = pack.to_path_buf();
+/// Reads a pack and drops the optional files the player doesn't want.
+async fn read_pack(pack: &Path, options: &PackOptions) -> Result<(PackIndex, Vec<String>)> {
+    let path = pack.to_path_buf();
+    let mut index = tokio::task::spawn_blocking(move || read_index(&path)).await??;
+    let optional: Vec<String> =
+        index.files.iter().filter(|f| f.env.as_ref().is_some_and(|e| e.client == "optional")).map(|f| f.path.clone()).collect();
+    if !optional.is_empty() {
+        let chosen = (options.ask_optional)(optional.clone()).await.context("the install was cancelled")?;
+        keep_chosen(&mut index, &optional, &chosen);
+    }
+    let path = pack.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let index = read_index(&pack)?;
-        let paths = pack_paths(&index, &pack)?;
+        let paths = pack_paths(&index, &path)?;
         Ok((index, paths))
     })
     .await?
@@ -282,16 +307,16 @@ pub async fn update(
     mut inst: Instance,
     pack: PathBuf,
     version_id: Option<String>,
-    parallel: usize,
+    options: &PackOptions,
     progress: &Progress,
 ) -> Result<Instance> {
     progress.set_label("Reading modpack");
-    let (index, files) = read_pack(&pack).await?;
+    let (index, files) = read_pack(&pack, options).await?;
     let (mc, loader, loader_version) = loader_of(&index.dependencies)?;
     let game_dir = inst.game_dir();
     let items: Vec<Download> = downloads(&index, &game_dir)?.into_iter().filter(|d| !is_disabled(&d.path)).collect();
     progress.set_label(format!("Downloading {} modpack files", items.len()));
-    net::download_all(items, parallel, progress).await?;
+    net::download_all(items, options.parallel, progress).await?;
 
     progress.set_label("Applying modpack overrides");
     // Extraction runs on a blocking thread that a cancel would not stop.
@@ -323,10 +348,10 @@ pub async fn update(
 }
 
 /// Like [`update`], with a version from Modrinth.
-pub async fn update_from_modrinth(inst: Instance, version: &Version, parallel: usize, progress: &Progress) -> Result<Instance> {
+pub async fn update_from_modrinth(inst: Instance, version: &Version, options: &PackOptions, progress: &Progress) -> Result<Instance> {
     let title = inst.pack.as_ref().map_or("modpack".to_string(), |p| p.title.clone());
     let (path, _pack_file) = download_pack(version, &title, progress).await?;
-    update(inst, path, Some(version.id.clone()), parallel, progress).await
+    update(inst, path, Some(version.id.clone()), options, progress).await
 }
 
 /// Deletes a half-made instance unless told to keep it.
@@ -403,6 +428,20 @@ mod tests {
         let files = unchecked_files(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files, ["mods/github.jar", "overrides/mods/bundled.jar", "client-overrides/mods/client.jar"]);
+    }
+
+    #[test]
+    fn leaves_out_optional_files_nobody_chose() {
+        let file = |path: &str| PackFile { path: path.into(), hashes: HashMap::new(), env: None, downloads: Vec::new(), file_size: 0 };
+        let mut index = PackIndex {
+            name: String::new(),
+            version_id: String::new(),
+            files: vec![file("mods/needed.jar"), file("mods/kept.jar"), file("shaderpacks/heavy.zip")],
+            dependencies: HashMap::new(),
+        };
+        let optional = ["mods/kept.jar".to_string(), "shaderpacks/heavy.zip".to_string()];
+        keep_chosen(&mut index, &optional, &optional[..1]);
+        assert_eq!(index.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["mods/needed.jar", "mods/kept.jar"]);
     }
 
     #[test]
