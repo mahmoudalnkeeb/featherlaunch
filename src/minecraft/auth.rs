@@ -289,6 +289,16 @@ pub struct Profile {
     pub name: String,
     #[serde(default)]
     pub skins: Vec<Skin>,
+    #[serde(default)]
+    pub capes: Vec<Cape>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Cape {
+    pub id: String,
+    pub state: String,
+    #[serde(default)]
+    pub alias: String,
 }
 
 #[derive(Deserialize)]
@@ -374,6 +384,25 @@ pub async fn fetch_profile(token: &str) -> Result<Profile> {
     Ok(resp.error_for_status()?.json().await?)
 }
 
+/// `None` takes the cape off.
+pub async fn set_cape(account: &Account, cape: Option<&str>) -> Result<()> {
+    const URL: &str = "https://api.minecraftservices.com/minecraft/profile/capes/active";
+    let token = account.token.as_deref().context("account is not signed in")?;
+    let request = match cape {
+        Some(id) => net::client().put(URL).json(&serde_json::json!({ "capeId": id })),
+        None => net::client().delete(URL),
+    };
+    request.bearer_auth(token).send().await?.error_for_status().context("changing the cape failed")?;
+    Ok(())
+}
+
+/// The capes a signed-in account owns.
+pub async fn capes(account: Account) -> Result<(Account, Vec<Cape>)> {
+    let account = ensure_token(account).await?;
+    let profile = fetch_profile(account.token.as_deref().context("account is not signed in")?).await?;
+    Ok((account, profile.capes))
+}
+
 pub async fn upload_skin(account: &Account, png: Vec<u8>, slim: bool) -> Result<Account> {
     let token = account.token.as_deref().context("account is not signed in")?;
     let form = reqwest::multipart::Form::new()
@@ -414,6 +443,15 @@ mod tests {
             token_expires: 0,
             xuid: String::new(),
         }
+    }
+
+    #[test]
+    fn reads_capes_from_a_profile() {
+        let json = r#"{"id":"a","name":"Sam","skins":[],"capes":[{"id":"c1","state":"ACTIVE","url":"https://x","alias":"Migrator"}]}"#;
+        let profile: Profile = serde_json::from_str(json).unwrap();
+        assert_eq!((profile.capes[0].alias.as_str(), profile.capes[0].state.as_str()), ("Migrator", "ACTIVE"));
+        let bare: Profile = serde_json::from_str(r#"{"id":"a","name":"Sam"}"#).unwrap();
+        assert!(bare.capes.is_empty());
     }
 
     #[test]

@@ -54,6 +54,9 @@ pub fn natives() -> PathBuf {
 pub fn java() -> PathBuf {
     root().join("java")
 }
+pub fn skins() -> PathBuf {
+    root().join("skins")
+}
 pub fn cache() -> PathBuf {
     root().join("cache")
 }

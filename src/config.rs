@@ -123,6 +123,8 @@ pub struct Config {
     pub open_console_on_launch: bool,
     pub sidebar_collapsed: bool,
     pub check_updates: bool,
+    /// `http://host:port`, for the launcher's own downloads. Empty means none.
+    pub proxy: String,
     /// `None` keeps instances in the data folder.
     pub instances_dir: Option<String>,
 }
@@ -145,6 +147,7 @@ impl Default for Config {
             open_console_on_launch: false,
             sidebar_collapsed: false,
             check_updates: true,
+            proxy: String::new(),
             instances_dir: None,
         }
     }

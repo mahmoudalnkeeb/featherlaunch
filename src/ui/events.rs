@@ -12,7 +12,7 @@ use super::dialogs::{Confirm, OptionalFiles};
 use super::{App, LauncherUpdate, SkinTex, editor};
 use crate::config::OnLaunch;
 use crate::java::JavaInstall;
-use crate::minecraft::auth::{Account, DeviceCode};
+use crate::minecraft::auth::{Account, Cape, DeviceCode};
 use crate::minecraft::instance::{Loader, World};
 use crate::minecraft::launch::LogLine;
 use crate::minecraft::logs::SavedLog;
@@ -48,6 +48,7 @@ pub enum Event {
     DeviceCode(DeviceCode),
     LoginFinished,
     Account(Account),
+    Capes { account: String, capes: Vec<Cape> },
     Skin { id: String, front: Vec<u8>, head: Vec<u8> },
     Log { inst: String, line: LogLine },
     GameStarted { inst: String, kill: oneshot::Sender<()> },
@@ -202,6 +203,7 @@ impl App {
                     self.accounts.upsert(account);
                     self.save_accounts();
                 }
+                Event::Capes { account, capes } => self.accounts_ui.on_capes(account, capes),
                 Event::Skin { id, front, head } => {
                     let tex = |name: String, size: [usize; 2], rgba: &[u8]| {
                         ctx.load_texture(name, egui::ColorImage::from_rgba_unmultiplied(size, rgba), egui::TextureOptions::NEAREST)

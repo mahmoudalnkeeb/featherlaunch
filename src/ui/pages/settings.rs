@@ -122,6 +122,11 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                 draft.update_channel = channel;
             });
 
+            widgets::form_row(ui, "Proxy", |ui| {
+                ui.add(widgets::input(&mut draft.proxy, "None").desired_width(ui.available_width()));
+                widgets::hint(ui, "Like http://host:8080. Applies after a restart, to the launcher but not the game.");
+            });
+
             widgets::form_section(ui, "Storage", false);
             widgets::form_row(ui, "Data folder", |ui| {
                 let path = paths::root().to_string_lossy().into_owned();
