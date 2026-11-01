@@ -68,11 +68,13 @@ pub fn safe_rel_path(p: &str) -> Option<PathBuf> {
     (!out.as_os_str().is_empty()).then_some(out)
 }
 
+/// How a pack's `dependencies` name each loader.
+pub const LOADER_KEYS: [(&str, Loader); 4] =
+    [("fabric-loader", Loader::Fabric), ("quilt-loader", Loader::Quilt), ("neoforge", Loader::NeoForge), ("forge", Loader::Forge)];
+
 pub fn loader_of(deps: &HashMap<String, String>) -> Result<(String, Loader, Option<String>)> {
     let mc = deps.get("minecraft").context("modpack does not name a Minecraft version")?.clone();
-    for (key, loader) in
-        [("fabric-loader", Loader::Fabric), ("quilt-loader", Loader::Quilt), ("neoforge", Loader::NeoForge), ("forge", Loader::Forge)]
-    {
+    for (key, loader) in LOADER_KEYS {
         if let Some(v) = deps.get(key) {
             return Ok((mc, loader, Some(v.clone())));
         }

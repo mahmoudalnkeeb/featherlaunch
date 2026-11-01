@@ -6,9 +6,10 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, Pos2, Rect, RichText, Sense, UiBuilder, vec2};
 
-use crate::minecraft::instance::{Instance, Loader, World};
+use crate::minecraft::instance::{ExportInfo, Instance, Loader, World};
 use crate::minecraft::logs::{self, SavedLog};
 use crate::minecraft::world;
+use crate::modplatform::export;
 use crate::modplatform::modrinth::{self, ContentKind, LocalFile, SearchResponse, Update};
 use crate::ui::dialogs::Confirm;
 use crate::ui::glyph::Glyph;
@@ -26,12 +27,21 @@ pub enum Tab {
     Worlds,
     Log,
     Settings,
+    Export,
 }
 
 impl Tab {
     pub fn first_for(inst: &Instance) -> Self {
         if inst.loader == Loader::Vanilla { Tab::Worlds } else { Tab::Content(ContentKind::Mod) }
     }
+}
+
+struct ExportForm {
+    as_pack: bool,
+    info: ExportInfo,
+    items: Vec<(String, bool)>,
+    /// The player has chosen items, so changing the format no longer resets them.
+    touched: bool,
 }
 
 pub struct Editor {
@@ -46,6 +56,7 @@ pub struct Editor {
     show_saved_logs: bool,
     saved_logs: Option<Vec<SavedLog>>,
     open_log: Option<(String, console::Console)>,
+    export: Option<ExportForm>,
     stale: bool,
     /// Numbers each read, so only the answer to the latest one is used.
     request: u64,
@@ -79,6 +90,7 @@ impl Editor {
             show_saved_logs: false,
             saved_logs: None,
             open_log: None,
+            export: None,
             stale: true,
             request: 0,
             browse: false,
@@ -221,6 +233,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             (Tab::Worlds, "Worlds"),
             (Tab::Log, "Log"),
             (Tab::Settings, "Settings"),
+            (Tab::Export, "Export"),
         ];
         if widgets::tabs(ui, &mut tab, &tabs) {
             ed.set_tab(tab);
@@ -231,6 +244,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             Tab::Content(kind) => content(app, ui, &mut ed, kind),
             Tab::Worlds => worlds(app, ui, &mut ed),
             Tab::Log => log_tab(app, ui, &mut ed),
+            Tab::Export => export_tab(app, ui, &mut ed),
         }
     });
     let esc = !ed.esc_taken
@@ -512,6 +526,79 @@ fn content(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind)
     } else {
         installed(app, ui, ed, kind);
     }
+}
+
+fn export_tab(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
+    let inst = &ed.inst;
+    let form = ed.export.get_or_insert_with(|| ExportForm {
+        as_pack: false,
+        info: inst.export.clone(),
+        items: export::top_level(&inst.game_dir()).into_iter().map(|n| (n, true)).collect(),
+        touched: false,
+    });
+    let mut start = false;
+    egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+        widgets::form(ui, |ui| {
+            widgets::form_section(ui, "Format", true);
+            widgets::form_row(ui, "Export as", |ui| {
+                widgets::segmented(ui, &mut form.as_pack, &[(false, "Instance (.zip)"), (true, "Modpack (.mrpack)")]);
+                let hint = if form.as_pack { "To share. Mods on Modrinth become links." } else { "A full copy, for backups." };
+                widgets::hint(ui, hint);
+            });
+            if form.as_pack {
+                widgets::form_row(ui, "Version", |ui| {
+                    ui.add(widgets::input(&mut form.info.version, "1.0.0").desired_width(ui.available_width()));
+                });
+                widgets::form_row(ui, "Summary", |ui| {
+                    ui.add(widgets::input(&mut form.info.summary, "Optional").desired_width(ui.available_width()));
+                });
+            }
+            widgets::form_section(ui, "Include", false);
+            if !form.touched {
+                for (name, on) in &mut form.items {
+                    *on = export::included_by_default(name, form.as_pack);
+                }
+            }
+            for (name, on) in &mut form.items {
+                widgets::form_row(ui, name, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.set_min_height(theme::H_MD);
+                        form.touched |= widgets::toggle(ui, on).changed();
+                    });
+                });
+            }
+            ui.add_space(theme::S3);
+            start = widgets::pill(ui, Kind::Secondary, None, "Export…").clicked();
+        });
+    });
+    if !start {
+        return;
+    }
+    let extension = if form.as_pack { "mrpack" } else { "zip" };
+    let file_name = format!("{}.{extension}", ed.inst.name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "-"));
+    let Some(target) = rfd::FileDialog::new().add_filter(extension, &[extension]).set_file_name(file_name).save_file() else { return };
+    let info = form.info.clone();
+    let as_pack = form.as_pack;
+    let include: Vec<String> = form.items.iter().filter(|(_, on)| *on).map(|(n, _)| n.clone()).collect();
+    ed.inst.export = info.clone();
+    ed.draft.export = info.clone();
+    if let Some(saved) = app.instances.iter_mut().find(|i| i.id == ed.inst.id) {
+        saved.export = info.clone();
+        if let Err(e) = saved.save() {
+            app.errors.push(format!("Saving {} failed: {e:#}", saved.name));
+        }
+    }
+    let inst = ed.inst.clone();
+    app.task(format!("Exporting {}", inst.name), move |progress, bus| async move {
+        if as_pack {
+            export::export_mrpack(&inst, include, &info, target.clone(), &progress).await?;
+        } else {
+            let (dir, out) = (inst.dir(), target.clone());
+            tokio::task::spawn_blocking(move || export::export_zip(&dir, &include, &out)).await??;
+        }
+        bus.send(Event::Info(format!("Exported to {}", target.display())));
+        Ok(())
+    });
 }
 
 fn log_tab(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {

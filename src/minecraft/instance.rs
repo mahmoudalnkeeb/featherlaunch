@@ -45,6 +45,14 @@ impl Loader {
     }
 }
 
+/// What the last export as a modpack said about it, ready for the next one.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExportInfo {
+    pub version: String,
+    pub summary: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Instance {
@@ -64,6 +72,7 @@ pub struct Instance {
     pub jvm_args: Option<String>,
     pub last_played: u64,
     pub play_seconds: u64,
+    pub export: ExportInfo,
     /// Modification time of `icon.png`, so a changed icon gets a new cache key.
     #[serde(skip)]
     pub icon_stamp: Option<u128>,
@@ -85,6 +94,7 @@ impl Default for Instance {
             jvm_args: None,
             last_played: 0,
             play_seconds: 0,
+            export: ExportInfo::default(),
             icon_stamp: None,
         }
     }
@@ -196,6 +206,7 @@ impl Instance {
             jvm_args,
             last_played: _,
             play_seconds: _,
+            export: _,
             icon_stamp: _,
         } = edited.clone();
         self.name = name;
@@ -335,6 +346,7 @@ mod tests {
             jvm_args: Some("-Xss1M".into()),
             last_played: 1,
             play_seconds: 1,
+            export: ExportInfo::default(),
             icon_stamp: None,
         };
         saved.apply_settings(&edited);
