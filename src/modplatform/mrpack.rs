@@ -319,10 +319,19 @@ pub async fn update_from_modrinth(inst: Instance, version: &Version, parallel: u
     update(inst, path, Some(version.id.clone()), parallel, progress).await
 }
 
-struct PartialInstance(Option<Instance>);
+/// Deletes a half-made instance unless told to keep it.
+pub struct PartialInstance(Option<Instance>);
 
 impl PartialInstance {
-    fn keep(mut self) -> Instance {
+    pub fn new(inst: Instance) -> Self {
+        Self(Some(inst))
+    }
+
+    pub fn get(&mut self) -> &mut Instance {
+        self.0.as_mut().expect("not kept yet")
+    }
+
+    pub fn keep(mut self) -> Instance {
         self.0.take().expect("kept once")
     }
 }
