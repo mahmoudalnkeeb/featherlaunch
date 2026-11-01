@@ -2,10 +2,15 @@
 //! Instance page: mods / resource packs / shader packs (installed + Modrinth), worlds, log, settings.
 //! It replaces the library in the main area instead of floating in a window.
 
+use std::path::PathBuf;
+
 use eframe::egui::{self, Pos2, Rect, RichText, Sense, UiBuilder, vec2};
 
-use crate::minecraft::instance::{Instance, Loader, World};
+use crate::minecraft::instance::{ExportInfo, Instance, Loader, World};
+use crate::minecraft::logs::{self, SavedLog};
+use crate::minecraft::world;
 use crate::modplatform::modrinth::{self, ContentKind, LocalFile, SearchResponse, Update};
+use crate::modplatform::{export, mrpack};
 use crate::ui::dialogs::Confirm;
 use crate::ui::glyph::Glyph;
 use crate::ui::project::{self, Browser, Request};
@@ -13,6 +18,10 @@ use crate::ui::widgets::{self, Kind};
 use crate::ui::{App, Event, Page, console, main_view, theme};
 
 const FOOTER_HEIGHT: f32 = 56.0;
+/// Below this width a content toolbar uses shorter labels, so all of it fits.
+const NARROW_TOOLBAR: f32 = 600.0;
+/// Room for a world row's buttons, leaving the rest of the row for its name.
+const WORLD_BUTTONS: f32 = 372.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -20,6 +29,7 @@ pub enum Tab {
     Worlds,
     Log,
     Settings,
+    Export,
 }
 
 impl Tab {
@@ -28,12 +38,31 @@ impl Tab {
     }
 }
 
+struct ExportForm {
+    as_pack: bool,
+    info: ExportInfo,
+    items: Vec<(String, bool)>,
+    /// The player has chosen items, so changing the format no longer resets them.
+    touched: bool,
+}
+
 pub struct Editor {
     inst: Instance,
     draft: Instance,
     tab: Tab,
     files: Option<Vec<LocalFile>>,
     worlds: Option<Vec<World>>,
+    /// The world whose data packs are open on the Worlds tab.
+    pack_world: Option<World>,
+    renaming: Option<(World, String)>,
+    show_saved_logs: bool,
+    saved_logs: Option<Vec<SavedLog>>,
+    open_log: Option<(String, console::Console)>,
+    export: Option<ExportForm>,
+    pack_requested: bool,
+    pack_failed: bool,
+    pack_versions: Option<Vec<modrinth::Version>>,
+    pack_idx: usize,
     stale: bool,
     /// Numbers each read, so only the answer to the latest one is used.
     request: u64,
@@ -45,6 +74,7 @@ pub struct Editor {
     checking: bool,
     memory_override: bool,
     jvm_override: bool,
+    window_override: bool,
     /// A text field or popup was active last frame, so it handles Esc. This reads last frame's
     /// state because egui clears focus on Esc before the frame starts.
     esc_taken: bool,
@@ -55,11 +85,22 @@ impl Editor {
         Self {
             memory_override: inst.memory_mb.is_some(),
             jvm_override: inst.jvm_args.is_some(),
+            window_override: inst.window.is_some(),
             draft: inst.clone(),
             inst,
             tab,
             files: None,
             worlds: None,
+            pack_world: None,
+            renaming: None,
+            show_saved_logs: false,
+            saved_logs: None,
+            open_log: None,
+            export: None,
+            pack_requested: false,
+            pack_failed: false,
+            pack_versions: None,
+            pack_idx: 0,
             stale: true,
             request: 0,
             browse: false,
@@ -108,21 +149,76 @@ impl Editor {
         }
     }
 
+    fn is_pack(&self, project: &str) -> bool {
+        self.inst.pack.as_ref().is_some_and(|p| p.project_id.as_deref() == Some(project))
+    }
+
+    pub fn on_pack_versions(&mut self, project: &str, versions: Vec<modrinth::Version>) {
+        if self.is_pack(project) {
+            self.pack_failed = false;
+            self.pack_idx = 0;
+            self.pack_versions = Some(versions);
+        }
+    }
+
+    pub fn on_pack_versions_failed(&mut self, project: &str) {
+        if self.is_pack(project) {
+            self.pack_failed = true;
+        }
+    }
+
+    pub fn on_saved_logs(&mut self, request: u64, logs: Vec<SavedLog>) {
+        if request == self.request {
+            self.saved_logs = Some(logs);
+        }
+    }
+
+    pub fn on_saved_log(&mut self, name: String, text: &str) {
+        if self.show_saved_logs {
+            self.open_log = Some((name, console::Console::saved(text)));
+        }
+    }
+
     pub fn set_icon_stamp(&mut self, stamp: Option<u128>) {
         self.inst.icon_stamp = stamp;
         self.draft.icon_stamp = stamp;
     }
 
+    fn browsing(&self, kind: ContentKind) -> bool {
+        self.tab == Tab::Content(kind) || (kind == ContentKind::DataPack && self.pack_world.is_some())
+    }
+
     pub fn on_search(&mut self, kind: ContentKind, offset: u64, results: SearchResponse) {
-        if self.tab == Tab::Content(kind) {
+        if self.browsing(kind) {
             self.browser.on_search(offset, results);
         }
     }
 
     pub fn on_search_failed(&mut self, kind: ContentKind) {
-        if self.tab == Tab::Content(kind) {
+        if self.browsing(kind) {
             self.browser.on_search_failed();
         }
+    }
+
+    fn open_data_packs(&mut self, world: World) {
+        self.pack_world = Some(world);
+        self.reset_content();
+    }
+
+    fn close_data_packs(&mut self) {
+        self.pack_world = None;
+        self.reset_content();
+    }
+
+    /// Clears what belongs to the list or search on screen.
+    fn reset_content(&mut self) {
+        self.files = None;
+        self.worlds = None;
+        self.stale = true;
+        self.browse = false;
+        self.updates.clear();
+        self.browser.clear();
+        self.searched_kind = None;
     }
 
     pub fn on_updates(&mut self, updates: Vec<Update>) {
@@ -132,13 +228,12 @@ impl Editor {
 
     pub fn set_tab(&mut self, tab: Tab) {
         if self.tab != tab {
+            let browse = self.browse;
             self.tab = tab;
-            self.files = None;
-            self.worlds = None;
-            self.stale = true;
-            self.updates.clear();
-            self.browser.clear();
-            self.searched_kind = None;
+            self.pack_world = None;
+            self.renaming = None;
+            self.reset_content();
+            self.browse = browse;
         }
     }
 }
@@ -166,6 +261,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             (Tab::Worlds, "Worlds"),
             (Tab::Log, "Log"),
             (Tab::Settings, "Settings"),
+            (Tab::Export, "Export"),
         ];
         if widgets::tabs(ui, &mut tab, &tabs) {
             ed.set_tab(tab);
@@ -175,11 +271,8 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             Tab::Settings => settings(app, ui, &mut ed),
             Tab::Content(kind) => content(app, ui, &mut ed, kind),
             Tab::Worlds => worlds(app, ui, &mut ed),
-            Tab::Log => {
-                let id = ed.inst.id.clone();
-                let action = app.consoles.entry(id.clone()).or_default().ui(ui);
-                console::handle(app, &id, action);
-            }
+            Tab::Log => log_tab(app, ui, &mut ed),
+            Tab::Export => export_tab(app, ui, &mut ed),
         }
     });
     let esc = !ed.esc_taken
@@ -268,7 +361,8 @@ fn settings(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
     let mut open_game_dir = false;
     egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
         widgets::form(ui, |ui| {
-            widgets::form_section(ui, "General", true);
+            pack_section(app, ui, ed);
+            widgets::form_section(ui, "General", ed.inst.pack.is_none());
             icon_row(app, ui, ed);
             let d = &mut ed.draft;
             widgets::form_row(ui, "Name", |ui| {
@@ -287,7 +381,8 @@ fn settings(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
             widgets::form_row(ui, "Minecraft", |ui| {
                 let current = d.mc_version.clone();
                 widgets::combo("mc", &current, 200.0).show_ui(ui, |ui| {
-                    for v in app.manifest.iter().flatten().filter(|v| v.kind == "release" || v.id == current) {
+                    for v in app.manifest.iter().flatten().filter(|v| v.kind == "release" || v.kind.starts_with("old_") || v.id == current)
+                    {
                         if ui.selectable_value(&mut d.mc_version, v.id.clone(), &v.id).changed() {
                             d.loader_version = None;
                         }
@@ -315,6 +410,25 @@ fn settings(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
                 });
             }
 
+            widgets::form_section(ui, "Game window", false);
+            widgets::form_row(ui, "Window size", |ui| {
+                ui.horizontal(|ui| {
+                    ui.set_min_height(theme::H_MD);
+                    widgets::toggle(ui, &mut ed.window_override);
+                    if !ed.window_override {
+                        let w = app.cfg.window;
+                        ui.label(RichText::new(format!("Default ({} × {})", w.width, w.height)).color(theme::TEXT_MUTED));
+                    }
+                });
+            });
+            if ed.window_override {
+                let mut window = d.window.unwrap_or(app.cfg.window);
+                super::settings::window_rows(ui, &mut window);
+                d.window = Some(window);
+            } else {
+                d.window = None;
+            }
+
             widgets::form_section(ui, "Java", false);
             widgets::form_row(ui, "Memory", |ui| {
                 let mut mb = d.memory_mb.unwrap_or(app.cfg.memory_mb);
@@ -330,6 +444,15 @@ fn settings(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
                 }
                 d.memory_mb = ed.memory_override.then_some(mb);
             });
+            if ed.memory_override {
+                let mut min = d.min_memory_mb.unwrap_or(app.cfg.min_memory_mb);
+                widgets::form_row(ui, "Minimum memory", |ui| {
+                    widgets::slider(ui, &mut min, 256..=8192, 256.0, " MB");
+                });
+                d.min_memory_mb = (min != app.cfg.min_memory_mb).then_some(min);
+            } else {
+                d.min_memory_mb = None;
+            }
             widgets::form_row(ui, "Java runtime", |ui| {
                 let text = d.java_path.clone().unwrap_or_else(|| "Automatic".into());
                 widgets::combo_cut(ui, "java", text, ui.available_width(), |ui| {
@@ -361,6 +484,76 @@ fn settings(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
     }
 }
 
+fn pack_section(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
+    let Some(pack) = ed.inst.pack.clone() else { return };
+    let running = app.running.contains_key(&ed.inst.id);
+    widgets::form_section(ui, "Modpack", true);
+    widgets::form_row(ui, "Installed", |ui| {
+        let text = if pack.version.is_empty() { pack.title.clone() } else { format!("{} {}", pack.title, pack.version) };
+        widgets::line_tip(ui, &text, theme::label(), theme::TEXT, theme::H_MD);
+    });
+    if let Some(project) = pack.project_id.as_deref() {
+        if !ed.pack_requested {
+            ed.pack_requested = true;
+            app.load_project_versions(project.to_string(), ContentKind::Modpack, None);
+        }
+        widgets::form_row(ui, "Version", |ui| match &ed.pack_versions {
+            _ if ed.pack_failed => {
+                if widgets::notice(ui, theme::ERR, "Couldn't load versions.", Some("Try again")) {
+                    ed.pack_failed = false;
+                    ed.pack_requested = false;
+                }
+            }
+            None => {
+                ui.add(egui::Spinner::new().color(theme::ACCENT));
+            }
+            Some(versions) if versions.is_empty() => widgets::hint(ui, "This pack has no versions."),
+            Some(versions) => {
+                ed.pack_idx = ed.pack_idx.min(versions.len() - 1);
+                let label = |v: &modrinth::Version| format!("{} ({})", v.version_number, v.game_versions.join(", "));
+                widgets::combo_cut(ui, "pack-update", label(&versions[ed.pack_idx]), ui.available_width(), |ui| {
+                    for (i, v) in versions.iter().enumerate() {
+                        ui.selectable_value(&mut ed.pack_idx, i, label(v));
+                    }
+                });
+                let chosen = &versions[ed.pack_idx];
+                let current = pack.version_id.as_deref() == Some(chosen.id.as_str());
+                if let Some(changelog) = chosen.changelog.as_deref().filter(|c| !c.is_empty()) {
+                    egui::ScrollArea::vertical().id_salt("pack-changelog").max_height(120.0).show(ui, |ui| {
+                        ui.label(RichText::new(changelog).font(theme::label()).color(theme::TEXT_MUTED));
+                    });
+                }
+                let update =
+                    ui.add_enabled_ui(!running && !current, |ui| widgets::pill(ui, Kind::Secondary, None, "Update to this version"));
+                if update.inner.clicked() {
+                    update_pack(app, &ed.inst, chosen.clone());
+                }
+                if running {
+                    widgets::hint(ui, "Close the game to update.");
+                }
+            }
+        });
+    }
+    widgets::form_row(ui, "From a file", |ui| {
+        let button = ui.add_enabled_ui(!running, |ui| widgets::pill(ui, Kind::Ghost, None, "Update from file…"));
+        if button.inner.clicked()
+            && let Some(path) = rfd::FileDialog::new().add_filter("Modrinth modpack", &["mrpack"]).pick_file()
+        {
+            app.read_pack(path, String::new(), Some(ed.inst.id.clone()));
+        }
+    });
+}
+
+fn update_pack(app: &mut App, inst: &Instance, version: modrinth::Version) {
+    let inst = inst.clone();
+    let parallel = app.cfg.parallel_downloads;
+    app.cancellable_task(format!("Updating {}", inst.name), move |progress, bus| async move {
+        let inst = mrpack::update_from_modrinth(inst, &version, parallel, &progress).await?;
+        bus.send(Event::PackUpdated(inst.id));
+        Ok(())
+    });
+}
+
 fn save_bar(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
     let running = app.running.contains_key(&ed.inst.id);
     let status = if running { "Close the game to save these changes." } else { "Unsaved changes" };
@@ -383,6 +576,7 @@ fn save_bar(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
             ed.draft = ed.inst.clone();
             ed.memory_override = ed.inst.memory_mb.is_some();
             ed.jvm_override = ed.inst.jvm_args.is_some();
+            ed.window_override = ed.inst.window.is_some();
         }
     });
 }
@@ -399,10 +593,12 @@ fn content(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind)
     if !ed.browse {
         read_files(app, ed, kind);
     }
+    let narrow = ui.available_width() < NARROW_TOOLBAR;
     ui.horizontal(|ui| {
         let installed = ed.files.as_ref().map_or("Installed".to_string(), |f| format!("Installed ({})", f.len()));
         let mut browse = ed.browse;
-        widgets::segmented(ui, &mut browse, &[(false, installed.as_str()), (true, "Browse Modrinth")]);
+        let browse_label = if narrow { "Browse" } else { "Browse Modrinth" };
+        widgets::segmented(ui, &mut browse, &[(false, installed.as_str()), (true, browse_label)]);
         ed.browse = browse;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if widgets::pill(ui, Kind::Ghost, None, "Open folder").clicked() {
@@ -412,16 +608,194 @@ fn content(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind)
                 }
             }
             if !ed.browse {
-                update_buttons(app, ui, ed, kind);
+                if widgets::pill(ui, Kind::Ghost, None, "Add files").clicked()
+                    && let Some(files) = rfd::FileDialog::new().add_filter(kind.label(), kind.extensions()).pick_files()
+                {
+                    add_files(app, ed, kind, files);
+                }
+                update_buttons(app, ui, ed, kind, narrow);
             }
         });
     });
     ui.add_space(theme::S3);
+    let dropped: Vec<PathBuf> = ui.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
+    if !dropped.is_empty() {
+        add_files(app, ed, kind, dropped);
+    }
     if ed.browse {
         browse(app, ui, ed, kind);
     } else {
         installed(app, ui, ed, kind);
     }
+}
+
+fn export_tab(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
+    let running = app.running.contains_key(&ed.inst.id);
+    let inst = &ed.inst;
+    let form = ed.export.get_or_insert_with(|| ExportForm {
+        as_pack: false,
+        info: inst.export.clone(),
+        items: export::top_level(&inst.game_dir()).into_iter().map(|n| (n, true)).collect(),
+        touched: false,
+    });
+    let mut start = false;
+    egui::ScrollArea::vertical().id_salt("export").auto_shrink([false; 2]).show(ui, |ui| {
+        widgets::form(ui, |ui| {
+            widgets::form_section(ui, "Format", true);
+            widgets::form_row(ui, "Export as", |ui| {
+                widgets::segmented(ui, &mut form.as_pack, &[(false, "Instance (.zip)"), (true, "Modpack (.mrpack)")]);
+                let hint = if form.as_pack { "To share. Mods on Modrinth become links." } else { "A full copy, for backups." };
+                widgets::hint(ui, hint);
+            });
+            if form.as_pack {
+                widgets::form_row(ui, "Version", |ui| {
+                    ui.add(widgets::input(&mut form.info.version, "1.0.0").desired_width(ui.available_width()));
+                });
+                widgets::form_row(ui, "Summary", |ui| {
+                    ui.add(widgets::input(&mut form.info.summary, "Optional").desired_width(ui.available_width()));
+                });
+            }
+            widgets::form_section(ui, "Include", false);
+            if !form.touched {
+                for (name, on) in &mut form.items {
+                    *on = export::included_by_default(name, form.as_pack);
+                }
+            }
+            for (name, on) in &mut form.items {
+                widgets::form_row(ui, name, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.set_min_height(theme::H_MD);
+                        form.touched |= widgets::toggle(ui, on).changed();
+                    });
+                });
+            }
+            ui.add_space(theme::S3);
+            let button = ui.add_enabled_ui(!running, |ui| widgets::pill(ui, Kind::Secondary, None, "Export…"));
+            start = button.inner.clicked();
+            if running {
+                widgets::hint(ui, "Close the game to export. It keeps some files locked.");
+            }
+        });
+    });
+    if !start {
+        return;
+    }
+    let extension = if form.as_pack { "mrpack" } else { "zip" };
+    let file_name = format!("{}.{extension}", ed.inst.name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "-"));
+    let Some(target) = rfd::FileDialog::new().add_filter(extension, &[extension]).set_file_name(file_name).save_file() else { return };
+    let info = form.info.clone();
+    let as_pack = form.as_pack;
+    let include: Vec<String> = form.items.iter().filter(|(_, on)| *on).map(|(n, _)| n.clone()).collect();
+    ed.inst.export = info.clone();
+    ed.draft.export = info.clone();
+    if let Some(saved) = app.instances.iter_mut().find(|i| i.id == ed.inst.id) {
+        saved.export = info.clone();
+        if let Err(e) = saved.save() {
+            app.errors.push(format!("Saving {} failed: {e:#}", saved.name));
+        }
+    }
+    let inst = ed.inst.clone();
+    app.task(format!("Exporting {}", inst.name), move |progress, bus| async move {
+        if as_pack {
+            export::export_mrpack(&inst, include, &info, target.clone(), &progress).await?;
+        } else {
+            let (dir, out) = (inst.dir(), target.clone());
+            tokio::task::spawn_blocking(move || export::export_zip(&dir, &include, &out)).await??;
+        }
+        bus.send(Event::Info(format!("Exported to {}", target.display())));
+        Ok(())
+    });
+}
+
+fn log_tab(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
+    if widgets::segmented(ui, &mut ed.show_saved_logs, &[(false, "This session"), (true, "Saved logs")]) {
+        ed.saved_logs = None;
+        ed.open_log = None;
+        ed.stale = true;
+    }
+    ui.add_space(theme::S3);
+    if !ed.show_saved_logs {
+        let action = app.consoles.entry(ed.inst.id.clone()).or_default().ui(ui);
+        console::handle(app, action);
+        return;
+    }
+    if let Some((name, log)) = &mut ed.open_log {
+        let mut back = false;
+        ui.horizontal(|ui| {
+            back = widgets::pill(ui, Kind::Ghost, None, "Back to saved logs").clicked();
+            ui.label(RichText::new(name.as_str()).color(theme::TEXT_MUTED));
+        });
+        ui.add_space(theme::S2);
+        let action = log.ui(ui);
+        console::handle(app, action);
+        if back {
+            ed.open_log = None;
+        }
+        return;
+    }
+    if let Some(request) = ed.start_read() {
+        let (inst, bus) = (ed.inst.clone(), app.bus.clone());
+        app.rt.spawn_blocking(move || {
+            let saved = logs::list(&inst.game_dir());
+            bus.send(Event::SavedLogs { inst: inst.id, request, logs: saved });
+        });
+    }
+    let Some(saved) = &ed.saved_logs else {
+        ui.add(egui::Spinner::new().color(theme::ACCENT));
+        return;
+    };
+    if saved.is_empty() {
+        widgets::empty_state(ui, "No saved logs", "Logs and crash reports show up here after you play.", |_| {});
+        return;
+    }
+    let mut open = None;
+    egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = widgets::LIST_GAP;
+        for log in saved {
+            let (row, response) = widgets::list_row(ui, 52.0, Sense::click(), false);
+            if !ui.is_rect_visible(row) {
+                continue;
+            }
+            let (x, width) = (row.left() + theme::S3, row.width() - 2.0 * theme::S3);
+            widgets::line(ui, Pos2::new(x, row.top() + 8.0), &log.name, theme::body_strong(), theme::TEXT, width);
+            let when = days_ago("Saved", log.modified);
+            widgets::line(ui, Pos2::new(x, row.top() + 27.0), &when, theme::label(), theme::TEXT_MUTED, width);
+            if response.clicked() {
+                open = Some(log.clone());
+            }
+        }
+    });
+    if let Some(log) = open {
+        let (id, bus) = (ed.inst.id.clone(), app.bus.clone());
+        app.spawn(async move {
+            let path = log.path.clone();
+            let text = tokio::task::spawn_blocking(move || logs::read(&path)).await??;
+            bus.send(Event::SavedLog { inst: id, name: log.name, text });
+            Ok(())
+        });
+    }
+}
+
+fn add_files(app: &mut App, ed: &mut Editor, kind: ContentKind, files: Vec<PathBuf>) {
+    let (inst, bus) = (ed.inst.clone(), app.bus.clone());
+    let world = ed.pack_world.as_ref().map(|w| w.path.clone());
+    ed.browse = false;
+    app.spawn(async move {
+        let added = tokio::task::spawn_blocking(move || match world {
+            Some(world) => modrinth::add_data_packs(&world, &files),
+            None => modrinth::add_files(&inst, kind, &files),
+        })
+        .await??;
+        // Newly added files still need looking up on Modrinth.
+        bus.send(Event::ContentChanged);
+        bus.send(match added {
+            0 => Event::Warning(format!("Those files don't belong in {}", kind.label())),
+            1 => Event::Info("Added 1 file".to_string()),
+            n => Event::Info(format!("Added {n} files")),
+        });
+        Ok(())
+    });
+    ed.identified.remove(&kind);
 }
 
 fn read_files(app: &mut App, ed: &mut Editor, kind: ContentKind) {
@@ -443,7 +817,7 @@ fn read_files(app: &mut App, ed: &mut Editor, kind: ContentKind) {
     }
 }
 
-fn update_buttons(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind) {
+fn update_buttons(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind, narrow: bool) {
     if !ed.updates.is_empty() {
         if widgets::pill(ui, Kind::Primary, None, &format!("Update all ({})", ed.updates.len())).clicked() {
             let (inst, updates) = (ed.inst.clone(), std::mem::take(&mut ed.updates));
@@ -458,7 +832,8 @@ fn update_buttons(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: Conte
         return;
     }
     let has_files = ed.files.as_ref().is_some_and(|f| !f.is_empty());
-    let check = ui.add_enabled_ui(!ed.checking && has_files, |ui| widgets::pill(ui, Kind::Secondary, None, "Check for updates"));
+    let label = if narrow { "Updates" } else { "Check for updates" };
+    let check = ui.add_enabled_ui(!ed.checking && has_files, |ui| widgets::pill(ui, Kind::Secondary, None, label));
     if check.inner.clicked() {
         ed.checking = true;
         let (inst, bus) = (ed.inst.clone(), app.bus.clone());
@@ -492,7 +867,7 @@ fn installed(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKin
     let mut delete = None;
     egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
         if files.is_empty() {
-            widgets::empty_state(ui, "Nothing installed yet", "Browse Modrinth, or drop files into the folder.", |ui| {
+            widgets::empty_state(ui, "Nothing installed yet", "Browse Modrinth, or drop files here.", |ui| {
                 if widgets::pill(ui, Kind::Primary, None, "Browse Modrinth").clicked() {
                     ed.browse = true;
                 }
@@ -580,8 +955,14 @@ fn browse(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind) 
         request = Some(Request::Search(0));
     }
     if let (Some(version), Some(hit)) = (install, &ed.browser.hit) {
-        let (inst, meta) = (ed.inst.clone(), hit.meta());
+        let (inst, meta, world) = (ed.inst.clone(), hit.meta(), ed.pack_world.clone());
         app.cancellable_task(format!("Installing {}", meta.title), move |progress, bus| async move {
+            if let Some(world) = world {
+                modrinth::install_data_pack(&world.path, &version, &progress).await?;
+                bus.send(Event::ContentChanged);
+                bus.send(Event::Info(format!("Installed {} in {}", meta.title, world.name)));
+                return Ok(());
+            }
             let installed = modrinth::install(&inst, kind, version, meta, &progress).await?;
             bus.send(Event::ContentChanged);
             match installed.warning(&inst) {
@@ -604,18 +985,29 @@ fn browse(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind) 
         None => {}
     }
 }
-fn days_ago(modified: Option<std::time::SystemTime>) -> String {
+fn days_ago(verb: &str, modified: Option<std::time::SystemTime>) -> String {
     modified
         .and_then(|m| m.elapsed().ok())
         .map(|d| match d.as_secs() / 86_400 {
-            0 => "Played today".to_string(),
-            1 => "Played yesterday".to_string(),
-            n => format!("Played {n} days ago"),
+            0 => format!("{verb} today"),
+            1 => format!("{verb} yesterday"),
+            n => format!("{verb} {n} days ago"),
         })
         .unwrap_or_default()
 }
 
+enum WorldAction {
+    DataPacks(World),
+    Copy(World),
+    Rename(World),
+    Delete(World),
+}
+
 fn worlds(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
+    if let Some(world) = ed.pack_world.clone() {
+        data_packs(app, ui, ed, &world);
+        return;
+    }
     if let Some(request) = ed.start_read() {
         let (inst, bus) = (ed.inst.clone(), app.bus.clone());
         app.rt.spawn_blocking(move || {
@@ -623,16 +1015,32 @@ fn worlds(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
             bus.send(Event::Worlds { inst: inst.id, request, worlds });
         });
     }
+    rename_row(app, ui, ed);
     let Some(worlds) = &ed.worlds else {
         ui.add(egui::Spinner::new().color(theme::ACCENT));
         return;
     };
+    let running = app.running.contains_key(&ed.inst.id);
+    let saves = ed.inst.game_dir().join("saves");
     ui.horizontal(|ui| {
         let count = format!("{} world{}", worlds.len(), if worlds.len() == 1 { "" } else { "s" });
         ui.label(RichText::new(count).color(theme::TEXT_MUTED));
+        if running {
+            ui.label(RichText::new("Close the game to change worlds.").color(theme::TEXT_MUTED));
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if widgets::pill(ui, Kind::Ghost, None, "Open saves folder").clicked() {
-                app.open_folder(&ed.inst.game_dir().join("saves"));
+                app.open_folder(&saves);
+            }
+            if widgets::pill(ui, Kind::Ghost, None, "Import world").clicked()
+                && let Some(zip) = rfd::FileDialog::new().add_filter("World zip", &["zip"]).pick_file()
+            {
+                let saves = saves.clone();
+                app.task("Importing world", move |_, bus| async move {
+                    tokio::task::spawn_blocking(move || world::import_zip(&saves, &zip)).await??;
+                    bus.send(Event::ContentChanged);
+                    Ok(())
+                });
             }
         });
     });
@@ -641,6 +1049,7 @@ fn worlds(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
         widgets::empty_state(ui, "No worlds yet", "Worlds you create in game show up here.", |_| {});
         return;
     }
+    let mut action = None;
     egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = widgets::LIST_GAP;
         for world in worlds {
@@ -648,19 +1057,111 @@ fn worlds(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
             if !ui.is_rect_visible(row) {
                 continue;
             }
-            let button = Rect::from_min_size(row.right_top() - vec2(112.0, -12.0), vec2(100.0, theme::H_SM));
+            let buttons =
+                Rect::from_min_max(Pos2::new(row.right() - WORLD_BUTTONS, row.top()), Pos2::new(row.right() - theme::S3, row.bottom()));
             let x = row.left() + theme::S3;
-            let w = button.left() - x - theme::S2;
+            let w = buttons.left() - x - theme::S2;
             let cut = widgets::line(ui, Pos2::new(x, row.top() + 8.0), &world.name, theme::body_strong(), theme::TEXT, w);
-            widgets::line(ui, Pos2::new(x, row.top() + 27.0), &days_ago(world.modified), theme::label(), theme::TEXT_MUTED, w);
+            widgets::line(ui, Pos2::new(x, row.top() + 27.0), &days_ago("Played", world.modified), theme::label(), theme::TEXT_MUTED, w);
             if cut {
-                let text = Rect::from_min_max(row.min, Pos2::new(button.left(), row.bottom()));
-                ui.interact(text, ui.id().with(("world", &world.name)), Sense::hover()).on_hover_text(&world.name);
+                let text = Rect::from_min_max(row.min, Pos2::new(buttons.left(), row.bottom()));
+                ui.interact(text, ui.id().with(("world", &world.path)), Sense::hover()).on_hover_text(&world.name);
             }
-            let mut child = ui.new_child(UiBuilder::new().max_rect(button).layout(egui::Layout::right_to_left(egui::Align::Center)));
+            let mut child = ui.new_child(UiBuilder::new().max_rect(buttons).layout(egui::Layout::right_to_left(egui::Align::Center)));
+            child.add_enabled_ui(!running, |ui| {
+                if widgets::icon_button(ui, Glyph::Trash, "Delete").clicked() {
+                    action = Some(WorldAction::Delete(world.clone()));
+                }
+                if widgets::pill_sized(ui, Kind::Ghost, None, "Rename", theme::H_SM).clicked() {
+                    action = Some(WorldAction::Rename(world.clone()));
+                }
+                if widgets::pill_sized(ui, Kind::Ghost, None, "Copy", theme::H_SM).clicked() {
+                    action = Some(WorldAction::Copy(world.clone()));
+                }
+            });
             if widgets::pill_sized(&mut child, Kind::Ghost, None, "Open folder", theme::H_SM).clicked() {
                 app.open(&world.path);
             }
+            if widgets::pill_sized(&mut child, Kind::Ghost, None, "Data packs", theme::H_SM).clicked() {
+                action = Some(WorldAction::DataPacks(world.clone()));
+            }
         }
     });
+    match action {
+        Some(WorldAction::DataPacks(world)) => ed.open_data_packs(world),
+        Some(WorldAction::Rename(world)) => {
+            let name = world.name.clone();
+            ed.renaming = Some((world, name));
+        }
+        Some(WorldAction::Delete(world)) => app.confirm = Some(Confirm::DeleteWorld(Box::new(world))),
+        Some(WorldAction::Copy(world)) => {
+            app.task(format!("Copying {}", world.name), move |_, bus| async move {
+                tokio::task::spawn_blocking(move || world::duplicate(&world)).await??;
+                bus.send(Event::ContentChanged);
+                Ok(())
+            });
+        }
+        None => {}
+    }
+}
+
+fn rename_row(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
+    let Some((target, name)) = &mut ed.renaming else { return };
+    let (mut save, mut cancel) = (false, false);
+    ui.horizontal(|ui| {
+        ui.add(widgets::input(name, "World name").desired_width(260.0));
+        save = ui.add_enabled_ui(!name.trim().is_empty(), |ui| widgets::pill(ui, Kind::Secondary, None, "Rename")).inner.clicked();
+        cancel = widgets::pill(ui, Kind::Ghost, None, "Cancel").clicked();
+    });
+    ui.add_space(theme::S2);
+    if save {
+        if let Err(e) = world::set_level_name(&target.path, name.trim()) {
+            app.errors.push(format!("Could not rename {}: {e:#}", target.name));
+        }
+        ed.invalidate();
+    }
+    if save || cancel {
+        ed.renaming = None;
+    }
+}
+
+fn data_packs(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, world: &World) {
+    if !ed.browse
+        && let Some(request) = ed.start_read()
+    {
+        let (id, path, bus) = (ed.inst.id.clone(), world.path.clone(), app.bus.clone());
+        app.rt.spawn_blocking(move || {
+            let files = modrinth::list_data_packs(&path);
+            bus.send(Event::Files { inst: id, request, files });
+        });
+    }
+    let mut back = false;
+    ui.horizontal(|ui| {
+        back = widgets::pill(ui, Kind::Ghost, None, "Back to worlds").clicked();
+        let installed = ed.files.as_ref().map_or("Installed".to_string(), |f| format!("Installed ({})", f.len()));
+        let mut browse = ed.browse;
+        widgets::segmented(ui, &mut browse, &[(false, installed.as_str()), (true, "Browse Modrinth")]);
+        ed.browse = browse;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if !ed.browse
+                && widgets::pill(ui, Kind::Ghost, None, "Add files").clicked()
+                && let Some(files) = rfd::FileDialog::new().add_filter("Data packs", ContentKind::DataPack.extensions()).pick_files()
+            {
+                add_files(app, ed, ContentKind::DataPack, files);
+            }
+        });
+    });
+    ui.add_space(theme::S3);
+    let dropped: Vec<PathBuf> = ui.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
+    if !dropped.is_empty() {
+        add_files(app, ed, ContentKind::DataPack, dropped);
+    }
+    if ed.browse {
+        browse(app, ui, ed, ContentKind::DataPack);
+    } else {
+        installed(app, ui, ed, ContentKind::DataPack);
+    }
+    if back {
+        ed.close_data_packs();
+    }
 }

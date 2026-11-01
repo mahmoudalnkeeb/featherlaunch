@@ -7,6 +7,8 @@ use std::time::SystemTime;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::config::GameWindow;
+use crate::minecraft::world;
 use crate::paths;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -43,6 +45,27 @@ impl Loader {
     }
 }
 
+/// What the last export as a modpack said about it, ready for the next one.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExportInfo {
+    pub version: String,
+    pub summary: String,
+}
+
+/// The modpack an instance was made from.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PackSource {
+    pub title: String,
+    pub version: String,
+    /// Modrinth IDs. A pack imported from a file has none, and can only update from a file.
+    pub project_id: Option<String>,
+    pub version_id: Option<String>,
+    /// What the pack put in the game folder, so an update can remove what it no longer has.
+    pub files: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Instance {
@@ -56,10 +79,14 @@ pub struct Instance {
     /// `None` uses the newest loader version available at install time.
     pub loader_version: Option<String>,
     pub memory_mb: Option<u32>,
+    pub min_memory_mb: Option<u32>,
+    pub window: Option<GameWindow>,
     pub java_path: Option<String>,
     pub jvm_args: Option<String>,
     pub last_played: u64,
     pub play_seconds: u64,
+    pub export: ExportInfo,
+    pub pack: Option<PackSource>,
     /// Modification time of `icon.png`, so a changed icon gets a new cache key.
     #[serde(skip)]
     pub icon_stamp: Option<u128>,
@@ -75,10 +102,14 @@ impl Default for Instance {
             loader: Loader::Vanilla,
             loader_version: None,
             memory_mb: None,
+            min_memory_mb: None,
+            window: None,
             java_path: None,
             jvm_args: None,
             last_played: 0,
             play_seconds: 0,
+            export: ExportInfo::default(),
+            pack: None,
             icon_stamp: None,
         }
     }
@@ -168,10 +199,6 @@ impl Instance {
         Ok(())
     }
 
-    pub fn latest_crash_report(&self) -> Option<PathBuf> {
-        newest_file(&self.game_dir().join("crash-reports"))
-    }
-
     pub fn worlds(&self) -> Vec<World> {
         list_worlds(&self.game_dir().join("saves"))
     }
@@ -188,10 +215,14 @@ impl Instance {
             loader,
             loader_version,
             memory_mb,
+            min_memory_mb,
+            window,
             java_path,
             jvm_args,
             last_played: _,
             play_seconds: _,
+            export: _,
+            pack: _,
             icon_stamp: _,
         } = edited.clone();
         self.name = name;
@@ -200,6 +231,8 @@ impl Instance {
         self.loader = loader;
         self.loader_version = loader_version;
         self.memory_mb = memory_mb;
+        self.min_memory_mb = min_memory_mb;
+        self.window = window;
         self.java_path = java_path;
         self.jvm_args = jvm_args;
     }
@@ -224,7 +257,8 @@ fn list_worlds(saves: &Path) -> Vec<World> {
     let Ok(entries) = std::fs::read_dir(saves) else { return Vec::new() };
     let worlds = entries.flatten().filter(|e| e.path().is_dir()).filter_map(|e| {
         let modified = e.metadata().and_then(|m| m.modified()).ok();
-        Some(World { name: e.file_name().into_string().ok()?, path: e.path(), modified })
+        let folder = e.file_name().into_string().ok()?;
+        Some(World { name: world::level_name(&e.path()).unwrap_or(folder), path: e.path(), modified })
     });
     newest_first(worlds.collect())
 }
@@ -232,11 +266,6 @@ fn list_worlds(saves: &Path) -> Vec<World> {
 fn newest_first(mut worlds: Vec<World>) -> Vec<World> {
     worlds.sort_by_key(|w| std::cmp::Reverse(w.modified));
     worlds
-}
-
-fn newest_file(dir: &Path) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    entries.flatten().max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok()).map(|e| e.path())
 }
 
 pub fn list() -> Vec<Instance> {
@@ -294,18 +323,6 @@ mod tests {
     }
 
     #[test]
-    fn newest_file_finds_the_latest_crash_report() {
-        let dir = temp_dir();
-        assert_eq!(newest_file(&dir.join("missing")), None);
-        assert_eq!(newest_file(&dir), None);
-        touch(&dir.join("old.txt"), 500);
-        touch(&dir.join("latest.txt"), 5);
-        touch(&dir.join("older.txt"), 900);
-        assert_eq!(newest_file(&dir), Some(dir.join("latest.txt")));
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
     fn worlds_are_the_folders_in_saves() {
         let dir = temp_dir();
         assert!(list_worlds(&dir.join("missing")).is_empty());
@@ -339,10 +356,14 @@ mod tests {
             loader: Loader::Fabric,
             loader_version: Some("0.16".into()),
             memory_mb: Some(4096),
+            min_memory_mb: Some(1024),
+            window: Some(GameWindow { width: 1280, height: 720, fullscreen: true }),
             java_path: Some("java".into()),
             jvm_args: Some("-Xss1M".into()),
             last_played: 1,
             play_seconds: 1,
+            export: ExportInfo::default(),
+            pack: None,
             icon_stamp: None,
         };
         saved.apply_settings(&edited);
@@ -350,6 +371,7 @@ mod tests {
         assert_eq!(saved.loader, Loader::Fabric);
         assert_eq!(saved.loader_version.as_deref(), Some("0.16"));
         assert_eq!((saved.memory_mb, saved.java_path.as_deref(), saved.jvm_args.as_deref()), (Some(4096), Some("java"), Some("-Xss1M")));
+        assert_eq!((saved.min_memory_mb, saved.window), (edited.min_memory_mb, edited.window));
         assert_eq!((saved.id.as_str(), saved.play_seconds, saved.last_played, saved.icon_stamp), ("a", 3600, 99, Some(7)));
     }
 }

@@ -7,10 +7,12 @@ use std::time::Instant;
 use eframe::egui;
 use tokio::sync::oneshot;
 
+use super::dialogs::Confirm;
 use super::{App, Bus, Event, Page, console, editor};
 use crate::config::OnLaunch;
 use crate::minecraft::auth::{self, AccountKind};
 use crate::minecraft::launch::{self, Level, LineSink, LogLine};
+use crate::sysmem;
 
 /// An instance's reserved "running" slot. Dropping it before the game starts frees the slot
 /// again; the error, if any, is reported by the task itself.
@@ -41,6 +43,14 @@ pub(super) struct Running {
 
 impl App {
     pub fn launch(&mut self, id: &str, offline: bool) {
+        self.start(id, offline, self.cfg.low_memory_warning);
+    }
+
+    pub fn launch_despite_low_memory(&mut self, id: &str, offline: bool) {
+        self.start(id, offline, false);
+    }
+
+    fn start(&mut self, id: &str, offline: bool, check_memory: bool) {
         if self.running.contains_key(id) {
             return;
         }
@@ -56,6 +66,14 @@ impl App {
             return;
         }
         let cfg = self.cfg.clone();
+        let memory_mb = inst.memory_mb.unwrap_or(cfg.memory_mb);
+        if check_memory
+            && let Some(ram) = sysmem::read()
+            && sysmem::is_low(memory_mb, ram.available_mb)
+        {
+            self.confirm = Some(Confirm::LowMemory { id: id.to_string(), offline, memory_mb, free_mb: ram.available_mb });
+            return;
+        }
         self.consoles.insert(id.to_string(), console::Console::default());
         if cfg.open_console_on_launch {
             self.open_editor(id, editor::Tab::Log);
@@ -73,6 +91,10 @@ impl App {
                 a
             };
             let prepared = launch::prepare(&inst, &account, offline, &cfg, &progress).await?;
+            for note in &prepared.notes {
+                bus.send(Event::Warning(note.clone()));
+                bus.send(Event::Log { inst: inst.id.clone(), line: LogLine { level: Level::Warn, text: note.clone() } });
+            }
             let (log_bus, log_id) = (bus.clone(), inst.id.clone());
             let sink: LineSink = Arc::new(move |line| log_bus.send_batched(Event::Log { inst: log_id.clone(), line }));
             let (exit_bus, exit_id) = (bus.clone(), inst.id.clone());

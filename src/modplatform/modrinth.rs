@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::minecraft::instance::{Instance, Loader};
-use crate::modplatform::mrpack;
+use crate::modplatform::{jar_meta, mrpack};
 use crate::net::{self, Download};
 use crate::paths;
 use crate::tasks::Progress;
@@ -22,6 +22,8 @@ pub enum ContentKind {
     ResourcePack,
     ShaderPack,
     Modpack,
+    /// Kept per world, in `datapacks` inside the world's folder.
+    DataPack,
 }
 
 impl ContentKind {
@@ -31,6 +33,7 @@ impl ContentKind {
             ContentKind::ResourcePack => "resourcepack",
             ContentKind::ShaderPack => "shader",
             ContentKind::Modpack => "modpack",
+            ContentKind::DataPack => "datapack",
         }
     }
 
@@ -40,6 +43,7 @@ impl ContentKind {
             ContentKind::ResourcePack => "resourcepacks",
             ContentKind::ShaderPack => "shaderpacks",
             ContentKind::Modpack => "",
+            ContentKind::DataPack => "datapacks",
         }
     }
 
@@ -49,7 +53,20 @@ impl ContentKind {
             ContentKind::ResourcePack => "Resource packs",
             ContentKind::ShaderPack => "Shader packs",
             ContentKind::Modpack => "Modpacks",
+            ContentKind::DataPack => "Data packs",
         }
+    }
+
+    pub fn extensions(self) -> &'static [&'static str] {
+        match self {
+            ContentKind::Mod => &["jar", "zip", "litemod"],
+            ContentKind::ResourcePack | ContentKind::ShaderPack | ContentKind::DataPack => &["zip"],
+            ContentKind::Modpack => &[],
+        }
+    }
+
+    fn accepts(self, path: &Path) -> bool {
+        path.extension().and_then(|e| e.to_str()).is_some_and(|e| self.extensions().contains(&e.to_lowercase().as_str()))
     }
 
     fn uses_loader(self) -> bool {
@@ -102,6 +119,8 @@ pub struct Version {
     pub loaders: Vec<String>,
     #[serde(default)]
     pub game_versions: Vec<String>,
+    #[serde(default)]
+    pub changelog: Option<String>,
 }
 
 impl Version {
@@ -174,6 +193,10 @@ pub async fn project_versions(project: &str, kind: ContentKind, mc: Option<&str>
     let mut query: Vec<(&str, String)> = Vec::new();
     if let Some(mc) = mc {
         query.push(("game_versions", json!([mc]).to_string()));
+    }
+    // Many data packs also come as mods, and those files wouldn't work in a world.
+    if kind == ContentKind::DataPack {
+        query.push(("loaders", json!(["datapack"]).to_string()));
     }
     if let Some(loader) = loader.filter(|_| kind.uses_loader())
         && !loader.modrinth_names().is_empty()
@@ -347,7 +370,7 @@ pub async fn install(inst: &Instance, kind: ContentKind, chosen: Version, meta: 
     Ok(installed)
 }
 
-fn remove_file_variants(path: &Path) {
+pub fn remove_file_variants(path: &Path) {
     let _ = std::fs::remove_file(path);
     let mut disabled = path.as_os_str().to_owned();
     disabled.push(".disabled");
@@ -359,6 +382,8 @@ pub struct LocalFile {
     pub file_name: String,
     pub path: PathBuf,
     pub enabled: bool,
+    /// In `content.json`. Other files may still have a name and version, read from the jar.
+    pub indexed: bool,
     pub title: Option<String>,
     pub version: Option<String>,
     pub icon_url: Option<String>,
@@ -374,11 +399,13 @@ pub fn list_local(inst: &Instance, kind: ContentKind) -> Vec<LocalFile> {
         .filter_map(|e| {
             let file_name = e.file_name().into_string().ok()?;
             let entry = index.files.get(&ContentIndex::key(kind.folder(), &file_name));
+            let jar = (entry.is_none() && kind == ContentKind::Mod).then(|| jar_meta::read(&e.path())).flatten();
             Some(LocalFile {
                 enabled: !file_name.ends_with(".disabled"),
                 path: e.path(),
-                title: entry.map(|e| e.title.clone()),
-                version: entry.map(|e| e.version_number.clone()),
+                indexed: entry.is_some(),
+                title: entry.map(|e| e.title.clone()).or_else(|| jar.as_ref().map(|j| j.title.clone())),
+                version: entry.map(|e| e.version_number.clone()).or_else(|| jar.and_then(|j| j.version)),
                 icon_url: entry.and_then(|e| e.icon_url.clone()),
                 file_name,
             })
@@ -435,12 +462,18 @@ pub async fn check_updates(inst: &Instance, kind: ContentKind) -> Result<Vec<Upd
         .collect())
 }
 
+/// The versions Modrinth has for these SHA-1 hashes. Unknown hashes are left out.
+pub async fn versions_by_hash(hashes: &[&String]) -> Result<HashMap<String, Version>> {
+    let body = json!({ "hashes": hashes, "algorithm": "sha1" });
+    Ok(net::client().post(format!("{API}/version_files")).json(&body).send().await?.error_for_status()?.json().await?)
+}
+
 /// Fills in names and icons for files missing them: older installs, and files added by hand
 /// (found on Modrinth by their SHA-1). Returns true if the index changed.
 pub async fn identify(inst: &Instance, kind: ContentKind) -> Result<bool> {
     let index = ContentIndex::load(inst);
     let files: Vec<LocalFile> = list_local(inst, kind).into_iter().filter(|f| f.path.is_file()).collect();
-    let unknown: Vec<LocalFile> = files.iter().filter(|f| f.title.is_none()).cloned().collect();
+    let unknown: Vec<LocalFile> = files.iter().filter(|f| !f.indexed).cloned().collect();
     let hashed: Vec<(String, LocalFile)> =
         tokio::task::spawn_blocking(move || unknown.into_iter().filter_map(|f| net::sha1_file(&f.path).ok().map(|h| (h, f))).collect())
             .await?;
@@ -448,14 +481,7 @@ pub async fn identify(inst: &Instance, kind: ContentKind) -> Result<bool> {
     // Hash → version for files we have never seen.
     let mut found: Vec<(String, Version)> = Vec::new();
     if !hashed.is_empty() {
-        let by_hash: HashMap<String, Version> = net::client()
-            .post(format!("{API}/version_files"))
-            .json(&json!({ "hashes": hashed.iter().map(|(h, _)| h).collect::<Vec<_>>(), "algorithm": "sha1" }))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let by_hash = versions_by_hash(&hashed.iter().map(|(h, _)| h).collect::<Vec<_>>()).await?;
         for (hash, file) in &hashed {
             if let Some(v) = by_hash.get(hash) {
                 found.push((ContentIndex::key(kind.folder(), &file.file_name), v.clone()));
@@ -535,7 +561,7 @@ pub async fn apply_update(inst: &Instance, kind: ContentKind, update: Update, pr
     }
     if !was_enabled && let Some(name) = file_name {
         let path = inst.game_dir().join(kind.folder()).join(&name);
-        let local = LocalFile { file_name: name, path, enabled: true, title: None, version: None, icon_url: None };
+        let local = LocalFile { file_name: name, path, enabled: true, indexed: true, title: None, version: None, icon_url: None };
         set_enabled(&local, false)?;
     }
     Ok(())
@@ -550,6 +576,63 @@ pub fn delete_local(inst: &Instance, kind: ContentKind, file: &LocalFile) -> Res
     let key = ContentIndex::key(kind.folder(), &file.file_name);
     ContentIndex::update(inst, |index| index.files.remove(&key))?;
     Ok(())
+}
+
+/// Downloads a data pack into a world. Packs have no dependencies to follow, and the file is
+/// named by its version, so nothing needs tracking.
+pub async fn install_data_pack(world: &Path, version: &Version, progress: &Progress) -> Result<()> {
+    let file = version.primary_file().context("this version has no files")?;
+    let mut d = Download::new(&file.url, world.join(ContentKind::DataPack.folder()).join(safe_file_name(&file.filename)?));
+    d.sha1 = file.hashes.get("sha1").cloned();
+    net::download_tracked(&d, Some(progress)).await
+}
+
+/// The files in a world's data pack folder.
+pub fn list_data_packs(world: &Path) -> Vec<LocalFile> {
+    let Ok(entries) = std::fs::read_dir(world.join(ContentKind::DataPack.folder())) else { return Vec::new() };
+    let mut out: Vec<LocalFile> = entries
+        .flatten()
+        .filter_map(|e| {
+            let file_name = e.file_name().into_string().ok()?;
+            Some(LocalFile {
+                enabled: !file_name.ends_with(".disabled"),
+                path: e.path(),
+                indexed: false,
+                title: None,
+                version: None,
+                icon_url: None,
+                file_name,
+            })
+        })
+        .collect();
+    out.sort_by_key(|f| f.file_name.to_lowercase());
+    out
+}
+
+/// Copies the files that belong in `kind`'s folder and returns how many that was.
+pub fn add_files(inst: &Instance, kind: ContentKind, files: &[PathBuf]) -> Result<usize> {
+    copy_into(&ensure_folder(inst, kind)?, kind, files)
+}
+
+/// Like [`add_files`], for a world's data pack folder.
+pub fn add_data_packs(world: &Path, files: &[PathBuf]) -> Result<usize> {
+    let dir = world.join(ContentKind::DataPack.folder());
+    std::fs::create_dir_all(&dir)?;
+    copy_into(&dir, ContentKind::DataPack, files)
+}
+
+fn copy_into(dir: &Path, kind: ContentKind, files: &[PathBuf]) -> Result<usize> {
+    let mut added = 0;
+    for file in files.iter().filter(|f| f.is_file() && kind.accepts(f)) {
+        let name = file.file_name().context("file has no name")?;
+        let target = dir.join(name);
+        // Copying a file onto itself would empty it.
+        if std::fs::canonicalize(&target).ok() != std::fs::canonicalize(file).ok() {
+            std::fs::copy(file, target).with_context(|| format!("copying {}", file.display()))?;
+        }
+        added += 1;
+    }
+    Ok(added)
 }
 
 pub fn ensure_folder(inst: &Instance, kind: ContentKind) -> Result<PathBuf> {
@@ -575,6 +658,17 @@ mod tests {
         installed.missing.push("Fabric API".into());
         let warning = installed.warning(&inst).unwrap();
         assert!(warning.contains("Fabric API") && warning.contains("1.20.1"), "{warning}");
+    }
+
+    #[test]
+    fn adding_a_file_from_its_own_folder_keeps_it() {
+        let dir = std::env::temp_dir().join(format!("featherlaunch-test-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.jar");
+        std::fs::write(&file, "mod").unwrap();
+        assert_eq!(copy_into(&dir, ContentKind::Mod, std::slice::from_ref(&file)).unwrap(), 1);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "mod");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

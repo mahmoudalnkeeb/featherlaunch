@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Yes-or-no questions before something can't be undone.
 
+use std::path::PathBuf;
+
 use eframe::egui::{self, Color32, RichText};
 
 use super::widgets::{self, Kind};
-use super::{App, Page, theme};
-use crate::minecraft::instance::Instance;
+use super::{App, Event, Page, theme};
+use crate::minecraft::instance::{Instance, World};
 use crate::modplatform::modrinth::{self, ContentKind, LocalFile};
 
 pub enum Confirm {
@@ -13,6 +15,21 @@ pub enum Confirm {
     DeleteFile { inst: Box<Instance>, kind: ContentKind, file: Box<LocalFile> },
     RemoveAccount(String),
     Discard(Page),
+    LowMemory { id: String, offline: bool, memory_mb: u32, free_mb: u64 },
+    UncheckedPack { path: PathBuf, group: String, update: Option<String>, files: Vec<String> },
+    DeleteWorld(Box<World>),
+    UploadLog { text: String },
+}
+
+/// How many paths a dialog names before summing up the rest.
+const LISTED_FILES: usize = 8;
+
+fn file_list(files: &[String]) -> String {
+    let mut lines: Vec<String> = files.iter().take(LISTED_FILES).cloned().collect();
+    if files.len() > LISTED_FILES {
+        lines.push(format!("and {} more", files.len() - LISTED_FILES));
+    }
+    lines.join("\n")
 }
 
 struct Prompt {
@@ -66,6 +83,41 @@ fn prompt(app: &App, confirm: &Confirm) -> Option<Prompt> {
             confirm: "Discard",
             enabled: true,
         },
+        Confirm::LowMemory { memory_mb, free_mb, .. } => Prompt {
+            title: "Low free memory",
+            body: format!("The game can use up to {memory_mb} MB, but only {free_mb} MB is free."),
+            note: Some(("Launching may slow down your PC. Closing other apps frees memory.".to_string(), theme::WARN)),
+            cancel: "Cancel",
+            confirm: "Launch anyway",
+            enabled: true,
+        },
+        Confirm::UncheckedPack { files, .. } => Prompt {
+            title: "Unchecked mods in this pack",
+            body: format!("This pack adds files Modrinth hasn't reviewed:\n\n{}", file_list(files)),
+            note: Some(("Mods can run any code on your PC. Only continue if you trust this pack.".to_string(), theme::WARN)),
+            cancel: "Cancel",
+            confirm: "Install anyway",
+            enabled: true,
+        },
+        Confirm::DeleteWorld(world) => Prompt {
+            title: "Delete world",
+            body: format!("\"{}\" will be deleted, along with everything built in it.", world.name),
+            note: cannot_undo,
+            cancel: "Cancel",
+            confirm: "Delete",
+            enabled: true,
+        },
+        Confirm::UploadLog { text } => Prompt {
+            title: "Upload log",
+            body: format!("{} lines will be sent to mclo.gs, and anyone with the link can read them.", text.lines().count()),
+            note: Some((
+                "Access tokens and your home folder are hidden first. Check the log for anything else private.".to_string(),
+                theme::WARN,
+            )),
+            cancel: "Cancel",
+            confirm: "Upload",
+            enabled: true,
+        },
     })
 }
 
@@ -90,6 +142,16 @@ fn apply(app: &mut App, confirm: Confirm) {
             app.save_accounts();
         }
         Confirm::Discard(page) => app.go_now(page),
+        Confirm::LowMemory { id, offline, .. } => app.launch_despite_low_memory(&id, offline),
+        Confirm::UncheckedPack { path, group, update, .. } => app.import_pack(path, group, update),
+        Confirm::UploadLog { text } => app.upload_log(text),
+        Confirm::DeleteWorld(world) => {
+            app.task(format!("Deleting {}", world.name), move |_, bus| async move {
+                tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&world.path)).await??;
+                bus.send(Event::ContentChanged);
+                Ok(())
+            });
+        }
     }
 }
 

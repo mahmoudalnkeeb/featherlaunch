@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! The "new instance" page: a custom version and loader, a Modrinth modpack, or a local .mrpack.
+//! The "new instance" page: a custom version and loader, a Modrinth modpack, or an imported file.
+
+use std::path::PathBuf;
 
 use eframe::egui::{self, CornerRadius, Layout, Pos2, Rect, RichText, Sense, UiBuilder, vec2};
 
 use crate::minecraft::instance::{Instance, Loader};
 use crate::modplatform::modrinth::{ContentKind, Version};
-use crate::modplatform::mrpack;
+use crate::modplatform::{import, mrpack};
 use crate::ui::project::{self, Browser, Request};
 use crate::ui::widgets::{self, Kind};
-use crate::ui::{App, Page, theme};
+use crate::ui::{App, Event, Page, theme};
 
 const SIDE_WIDTH: f32 = 240.0;
 const PACK_FOOTER: f32 = 72.0;
@@ -29,6 +31,7 @@ pub struct NewInstance {
     mc: String,
     filter: String,
     snapshots: bool,
+    old_versions: bool,
     loader: Loader,
     loader_version: Option<String>,
     pub browser: Browser,
@@ -44,6 +47,7 @@ impl Default for NewInstance {
             mc: String::new(),
             filter: String::new(),
             snapshots: false,
+            old_versions: false,
             loader: Loader::Vanilla,
             loader_version: None,
             browser: Browser::default(),
@@ -66,7 +70,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
     let mut st = std::mem::take(&mut app.new_instance);
     let subtitle = match st.mode {
         Mode::Modpack => "Install a modpack from Modrinth as a new instance.",
-        Mode::Import => "Make an instance from a .mrpack file.",
+        Mode::Import => "Make an instance from a modpack file or another launcher.",
         Mode::Custom => "Pick a Minecraft version and an optional mod loader.",
     };
     // No page scroll: both columns fit, and the lists inside them scroll.
@@ -75,7 +79,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             widgets::page_header(ui, "New instance", subtitle, |_| {});
             ui.add_space(theme::S4);
             let mut mode = st.mode;
-            let modes = [(Mode::Custom, "Custom version"), (Mode::Modpack, "Modrinth modpacks"), (Mode::Import, "Import file")];
+            let modes = [(Mode::Custom, "Custom version"), (Mode::Modpack, "Modrinth modpacks"), (Mode::Import, "Import")];
             widgets::segmented(ui, &mut mode, &modes);
             st.mode = mode;
             ui.add_space(theme::S4);
@@ -126,14 +130,31 @@ fn custom(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
     ui.scope_builder(UiBuilder::new().max_rect(right).layout(Layout::top_down(egui::Align::LEFT)), |ui| details(app, ui, st)).inner
 }
 
+fn listed(kind: &str, snapshots: bool, old_versions: bool) -> bool {
+    match kind {
+        "release" => true,
+        "snapshot" => snapshots,
+        "old_alpha" | "old_beta" => old_versions,
+        _ => false,
+    }
+}
+
+fn kind_label(kind: &str) -> Option<&'static str> {
+    match kind {
+        "snapshot" => Some("Snapshot"),
+        "old_alpha" => Some("Alpha"),
+        "old_beta" => Some("Beta"),
+        _ => None,
+    }
+}
+
 fn versions(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) {
+    widgets::search(ui, &mut st.filter, "Filter versions", ui.available_width());
+    ui.add_space(theme::S2);
     ui.horizontal(|ui| {
-        let width = (ui.available_width() - 110.0).max(100.0);
-        widgets::search(ui, &mut st.filter, "Filter versions", width);
-        ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new("Snapshots").font(theme::label()).color(theme::TEXT_MUTED));
-            widgets::toggle(ui, &mut st.snapshots);
-        });
+        widgets::toggle_labeled(ui, &mut st.snapshots, "Snapshots");
+        ui.add_space(theme::S3);
+        widgets::toggle_labeled(ui, &mut st.old_versions, "Alpha and beta");
     });
     ui.add_space(theme::S2);
     if app.manifest_failed {
@@ -151,9 +172,10 @@ fn versions(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) {
                 ui.add(egui::Spinner::new().color(theme::ACCENT));
                 return;
             };
-            for v in manifest.iter().filter(|v| {
-                (v.kind == "release" || (st.snapshots && v.kind == "snapshot")) && (st.filter.is_empty() || v.id.contains(&st.filter))
-            }) {
+            for v in manifest
+                .iter()
+                .filter(|v| listed(&v.kind, st.snapshots, st.old_versions) && (st.filter.is_empty() || v.id.contains(&st.filter)))
+            {
                 let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
                 if !ui.is_rect_visible(rect) {
                     continue;
@@ -168,14 +190,8 @@ fn versions(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) {
                 let painter = ui.painter();
                 let id =
                     painter.text(Pos2::new(rect.left() + 10.0, y), egui::Align2::LEFT_CENTER, &v.id, theme::body_strong(), theme::TEXT);
-                if v.kind == "snapshot" {
-                    painter.text(
-                        Pos2::new(id.right() + theme::S2, y),
-                        egui::Align2::LEFT_CENTER,
-                        "Snapshot",
-                        theme::label(),
-                        theme::TEXT_MUTED,
-                    );
+                if let Some(label) = kind_label(&v.kind) {
+                    painter.text(Pos2::new(id.right() + theme::S2, y), egui::Align2::LEFT_CENTER, label, theme::label(), theme::TEXT_MUTED);
                 }
                 let date = v.release_time.get(..10).unwrap_or("");
                 painter.text(Pos2::new(rect.right() - 10.0, y), egui::Align2::RIGHT_CENTER, date, theme::label(), theme::TEXT_MUTED);
@@ -315,7 +331,7 @@ fn modpacks(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
     let parallel = app.cfg.parallel_downloads;
     app.cancellable_task(format!("Installing {}", pack.title), move |progress, bus| async move {
         let inst = mrpack::install_from_modrinth(&version, &pack.title, pack.icon_url.as_deref(), group, parallel, &progress).await?;
-        bus.send(crate::ui::Event::InstancesChanged(Some(inst.id)));
+        bus.send(Event::InstancesChanged(Some(inst.id)));
         Ok(())
     });
     true
@@ -324,24 +340,79 @@ fn modpacks(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
 fn import(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
     let mut close = false;
     widgets::form(ui, |ui| {
-        ui.label(RichText::new("A .mrpack file exported from Modrinth, Prism or another launcher.").color(theme::TEXT_MUTED));
+        ui.label(RichText::new("A .mrpack, or an instance zip from FeatherLaunch, Prism or MultiMC.").color(theme::TEXT_MUTED));
         ui.add_space(theme::S3);
         widgets::form_row(ui, "Group", |ui| {
             ui.add(widgets::input(&mut st.group, "Optional").desired_width(ui.available_width()));
         });
         ui.add_space(theme::S2);
-        if widgets::pill(ui, Kind::Primary, None, "Choose .mrpack file…").clicked()
-            && let Some(path) = rfd::FileDialog::new().add_filter("Modrinth modpack", &["mrpack"]).pick_file()
+        if widgets::pill(ui, Kind::Primary, None, "Choose file…").clicked()
+            && let Some(path) = rfd::FileDialog::new().add_filter("Modpack or instance", &["mrpack", "zip"]).pick_file()
         {
-            let group = st.group.trim().to_string();
-            let parallel = app.cfg.parallel_downloads;
-            app.cancellable_task("Importing modpack", move |progress, bus| async move {
-                let inst = mrpack::import(path, group, parallel, &progress).await?;
-                bus.send(crate::ui::Event::InstancesChanged(Some(inst.id)));
+            app.read_pack(path, st.group.trim().to_string(), None);
+            close = true;
+        }
+        ui.add_space(theme::S4);
+        ui.label(RichText::new("Or copy every instance from a Prism Launcher or MultiMC folder.").color(theme::TEXT_MUTED));
+        ui.add_space(theme::S2);
+        if widgets::pill(ui, Kind::Secondary, None, "Choose folder…").clicked()
+            && let Some(dir) = rfd::FileDialog::new().pick_folder()
+        {
+            app.task("Importing instances", move |_, bus| async move {
+                let count = tokio::task::spawn_blocking(move || import::import_folder(&dir)).await??;
+                bus.send(Event::InstancesChanged(None));
+                bus.send(Event::Info(format!("Imported {count} instance{}", if count == 1 { "" } else { "s" })));
                 Ok(())
             });
             close = true;
         }
     });
     close
+}
+
+impl App {
+    /// Checks a pack file for anything to confirm before it's used. `update` is the instance it
+    /// would update, when it isn't becoming a new one.
+    pub fn read_pack(&mut self, path: PathBuf, group: String, update: Option<String>) {
+        let bus = self.bus.clone();
+        self.spawn(async move {
+            let pack = path.clone();
+            let files = tokio::task::spawn_blocking(move || import::unchecked_files(&pack)).await??;
+            bus.send(Event::PackRead { path, group, update, files });
+            Ok(())
+        });
+    }
+
+    pub fn import_pack(&mut self, path: PathBuf, group: String, update: Option<String>) {
+        let parallel = self.cfg.parallel_downloads;
+        let target = update.and_then(|id| self.instance(&id).cloned());
+        self.cancellable_task("Importing modpack", move |progress, bus| async move {
+            match target {
+                Some(inst) => {
+                    let inst = mrpack::update(inst, path, None, parallel, &progress).await?;
+                    bus.send(Event::PackUpdated(inst.id));
+                }
+                None => {
+                    let inst = import::import_file(path, group, parallel, &progress).await?;
+                    bus.send(Event::InstancesChanged(Some(inst.id)));
+                }
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_kinds_follow_their_toggles() {
+        assert!(listed("release", false, false));
+        assert!(!listed("snapshot", false, true));
+        assert!(listed("snapshot", true, false));
+        assert!(!listed("old_alpha", true, false));
+        assert!(listed("old_alpha", false, true));
+        assert!(listed("old_beta", false, true));
+    }
 }

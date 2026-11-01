@@ -8,12 +8,14 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use tokio::sync::oneshot;
 
-use super::{App, LauncherUpdate, SkinTex};
+use super::dialogs::Confirm;
+use super::{App, LauncherUpdate, SkinTex, editor};
 use crate::config::OnLaunch;
 use crate::java::JavaInstall;
 use crate::minecraft::auth::{Account, DeviceCode};
 use crate::minecraft::instance::{Loader, World};
 use crate::minecraft::launch::LogLine;
+use crate::minecraft::logs::SavedLog;
 use crate::minecraft::meta::mojang::ManifestEntry;
 use crate::minecraft::skin;
 use crate::modplatform::modrinth::{ContentKind, LocalFile, SearchResponse, Update, Version};
@@ -30,8 +32,13 @@ pub enum Event {
     InstancesChanged(Option<String>),
     InstanceDeleted(String),
     InstanceIconChanged(String),
+    PackRead { path: PathBuf, group: String, update: Option<String>, files: Vec<String> },
+    PackUpdated(String),
     Files { inst: String, request: u64, files: Vec<LocalFile> },
     Worlds { inst: String, request: u64, worlds: Vec<World> },
+    SavedLogs { inst: String, request: u64, logs: Vec<SavedLog> },
+    SavedLog { inst: String, name: String, text: String },
+    LogUploaded(String),
     DeviceCode(DeviceCode),
     LoginFinished,
     Account(Account),
@@ -103,6 +110,19 @@ impl App {
                         e.set_icon_stamp(stamp);
                     }
                 }
+                Event::PackRead { path, group, update, files } => {
+                    if files.is_empty() {
+                        self.import_pack(path, group, update);
+                    } else {
+                        self.confirm = Some(Confirm::UncheckedPack { path, group, update, files });
+                    }
+                }
+                Event::PackUpdated(id) => {
+                    self.reload_instances(Some(id.clone()));
+                    if self.editor.as_ref().is_some_and(|e| e.instance_id() == id) {
+                        self.editor = self.instance(&id).map(|i| editor::Editor::new(i.clone(), editor::Tab::Settings));
+                    }
+                }
                 Event::Files { inst, request, files } => {
                     if let Some(e) = self.editor.as_mut().filter(|e| e.instance_id() == inst) {
                         e.on_files(request, files);
@@ -112,6 +132,20 @@ impl App {
                     if let Some(e) = self.editor.as_mut().filter(|e| e.instance_id() == inst) {
                         e.on_worlds(request, worlds);
                     }
+                }
+                Event::SavedLogs { inst, request, logs } => {
+                    if let Some(e) = self.editor.as_mut().filter(|e| e.instance_id() == inst) {
+                        e.on_saved_logs(request, logs);
+                    }
+                }
+                Event::SavedLog { inst, name, text } => {
+                    if let Some(e) = self.editor.as_mut().filter(|e| e.instance_id() == inst) {
+                        e.on_saved_log(name, &text);
+                    }
+                }
+                Event::LogUploaded(url) => {
+                    ctx.copy_text(url.clone());
+                    self.notify(format!("Link copied: {url}"));
                 }
                 Event::DeviceCode(code) => self.device_code = Some(code),
                 Event::LoginFinished => {
@@ -175,12 +209,14 @@ impl App {
                     self.new_instance.browser.on_versions(&project, &versions);
                     if let Some(e) = &mut self.editor {
                         e.browser.on_versions(&project, &versions);
+                        e.on_pack_versions(&project, versions);
                     }
                 }
                 Event::VersionsFailed(project) => {
                     self.new_instance.browser.on_versions_failed(&project);
                     if let Some(e) = &mut self.editor {
                         e.browser.on_versions_failed(&project);
+                        e.on_pack_versions_failed(&project);
                     }
                 }
                 Event::ContentChanged => {

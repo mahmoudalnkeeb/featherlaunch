@@ -12,6 +12,7 @@ mod minecraft;
 mod modplatform;
 mod net;
 mod paths;
+mod sysmem;
 mod tasks;
 mod ui;
 mod updater;

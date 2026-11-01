@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tokio::sync::oneshot;
 
-use crate::config::Config;
+use crate::config::{Config, GameWindow};
 use crate::java;
 use crate::minecraft::auth::{Account, AccountKind};
 use crate::minecraft::instance::Instance;
@@ -23,6 +23,8 @@ pub struct Prepared {
     pub java: PathBuf,
     pub args: Vec<String>,
     pub game_dir: PathBuf,
+    /// Things the player should know about this launch.
+    pub notes: Vec<String>,
 }
 
 pub async fn prepare(inst: &Instance, account: &Account, offline: bool, cfg: &Config, progress: &Progress) -> Result<Prepared> {
@@ -31,8 +33,19 @@ pub async fn prepare(inst: &Instance, account: &Account, offline: bool, cfg: &Co
     let vanilla = mojang::ensure_vanilla(&inst.mc_version).await?;
 
     let required = vanilla.java_version.as_ref().map_or(8, |j| j.major_version);
-    let java = match inst.java_path.as_ref().or(cfg.java_path.as_ref()) {
-        Some(p) => PathBuf::from(p),
+    let mut notes = Vec::new();
+    let java = match inst.java_path.as_ref().or(cfg.java_path.as_ref()).map(PathBuf::from) {
+        Some(path) if cfg.ignore_java_check => path,
+        Some(path) => {
+            let checked = path.clone();
+            let major = tokio::task::spawn_blocking(move || java::major_of(&checked)).await??;
+            if java::fits(major, required) {
+                path
+            } else {
+                notes.push(format!("Minecraft {} needs Java {required}, not Java {major}. Using automatic Java instead.", inst.mc_version));
+                java::ensure(required, progress).await?
+            }
+        }
         None => java::ensure(required, progress).await?,
     };
 
@@ -65,6 +78,7 @@ pub async fn prepare(inst: &Instance, account: &Account, offline: bool, cfg: &Co
         .collect();
     classpath.push(client_jar(&inst.mc_version).to_string_lossy().into_owned());
 
+    let window = inst.window.unwrap_or(cfg.window);
     let (name, uuid, token, user_type) = match (account.kind, offline) {
         (AccountKind::Microsoft, false) => {
             (account.name.clone(), account.id.clone(), account.token.clone().context("account is not signed in")?, "msa")
@@ -93,10 +107,13 @@ pub async fn prepare(inst: &Instance, account: &Account, offline: bool, cfg: &Co
         ("classpath", classpath.join(CLASSPATH_SEPARATOR)),
         ("classpath_separator", CLASSPATH_SEPARATOR.to_string()),
         ("library_directory", paths::libraries().to_string_lossy().into_owned()),
+        ("resolution_width", window.width.to_string()),
+        ("resolution_height", window.height.to_string()),
     ]);
 
     let memory = inst.memory_mb.unwrap_or(cfg.memory_mb);
-    let mut args = vec![format!("-Xmx{memory}m"), "-Xms512m".to_string()];
+    let min_memory = inst.min_memory_mb.unwrap_or(cfg.min_memory_mb).min(memory);
+    let mut args = vec![format!("-Xmx{memory}m"), format!("-Xms{min_memory}m")];
     let extra = inst.jvm_args.as_deref().unwrap_or(&cfg.jvm_args);
     args.extend(extra.split_whitespace().map(String::from));
     args.push("-Dlog4j2.formatMsgNoLookups=true".into());
@@ -132,8 +149,21 @@ pub async fn prepare(inst: &Instance, account: &Account, offline: bool, cfg: &Co
         (Some(a), None) => args.extend(a.game.iter().flat_map(|v| v.values()).map(|s| substitute(&s, &vars))),
         (None, None) => {}
     }
+    args.extend(window_args(window, version.minecraft_arguments.is_some()));
 
-    Ok(Prepared { java, args, game_dir })
+    Ok(Prepared { java, args, game_dir, notes })
+}
+
+/// Newer version files ask for the size themselves through `has_custom_resolution`.
+fn window_args(window: GameWindow, legacy: bool) -> Vec<String> {
+    let mut args = Vec::new();
+    if legacy {
+        args.extend(["--width".to_string(), window.width.to_string(), "--height".to_string(), window.height.to_string()]);
+    }
+    if window.fullscreen {
+        args.push("--fullscreen".to_string());
+    }
+    args
 }
 
 fn client_jar(mc: &str) -> PathBuf {
@@ -427,6 +457,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn window_arguments_depend_on_the_version_format() {
+        let window = GameWindow { width: 1280, height: 720, fullscreen: false };
+        assert_eq!(window_args(window, true), ["--width", "1280", "--height", "720"]);
+        assert!(window_args(window, false).is_empty());
+        assert_eq!(window_args(GameWindow { fullscreen: true, ..window }, false), ["--fullscreen"]);
+    }
+
+    #[test]
     fn redact_shortens_arguments_in_any_language() {
         // Multi-byte characters straddle byte 120 at every offset.
         for pad in 0..4 {
@@ -477,7 +515,7 @@ mod tests {
         let (java, args) = ("ping", ["-n", "11", "127.0.0.1"].map(String::from).to_vec());
         #[cfg(not(windows))]
         let (java, args) = ("sleep", vec!["10".to_string()]);
-        let prep = Prepared { java: java.into(), args, game_dir: std::env::temp_dir() };
+        let prep = Prepared { java: java.into(), args, game_dir: std::env::temp_dir(), notes: Vec::new() };
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let _kill = runtime.block_on(async { spawn(prep, Arc::new(|_| {}), |_| {}) }).unwrap();
@@ -496,7 +534,7 @@ mod tests {
         let (java, args) = ("cmd", ["/c", "echo", "out&", "echo", "err", "1>&2"].map(String::from).to_vec());
         #[cfg(not(windows))]
         let (java, args) = ("sh", ["-c", "echo out; echo err >&2"].map(String::from).to_vec());
-        let prep = Prepared { java: java.into(), args, game_dir: std::env::temp_dir() };
+        let prep = Prepared { java: java.into(), args, game_dir: std::env::temp_dir(), notes: Vec::new() };
 
         let (line_tx, lines) = std::sync::mpsc::channel();
         let sink: LineSink = Arc::new(move |line| {
