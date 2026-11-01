@@ -174,10 +174,6 @@ impl Instance {
         Ok(())
     }
 
-    pub fn latest_crash_report(&self) -> Option<PathBuf> {
-        newest_file(&self.game_dir().join("crash-reports"))
-    }
-
     pub fn worlds(&self) -> Vec<World> {
         list_worlds(&self.game_dir().join("saves"))
     }
@@ -245,11 +241,6 @@ fn newest_first(mut worlds: Vec<World>) -> Vec<World> {
     worlds
 }
 
-fn newest_file(dir: &Path) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    entries.flatten().max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok()).map(|e| e.path())
-}
-
 pub fn list() -> Vec<Instance> {
     let Ok(entries) = std::fs::read_dir(paths::instances()) else { return Vec::new() };
     let mut out: Vec<Instance> =
@@ -302,18 +293,6 @@ mod tests {
     fn touch(path: &Path, seconds_ago: u64) {
         let time = SystemTime::now() - std::time::Duration::from_secs(seconds_ago);
         std::fs::File::options().write(true).create(true).truncate(false).open(path).unwrap().set_modified(time).unwrap();
-    }
-
-    #[test]
-    fn newest_file_finds_the_latest_crash_report() {
-        let dir = temp_dir();
-        assert_eq!(newest_file(&dir.join("missing")), None);
-        assert_eq!(newest_file(&dir), None);
-        touch(&dir.join("old.txt"), 500);
-        touch(&dir.join("latest.txt"), 5);
-        touch(&dir.join("older.txt"), 900);
-        assert_eq!(newest_file(&dir), Some(dir.join("latest.txt")));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

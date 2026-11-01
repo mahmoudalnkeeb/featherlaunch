@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use eframe::egui::{self, Pos2, Rect, RichText, Sense, UiBuilder, vec2};
 
 use crate::minecraft::instance::{Instance, Loader, World};
+use crate::minecraft::logs::{self, SavedLog};
 use crate::minecraft::world;
 use crate::modplatform::modrinth::{self, ContentKind, LocalFile, SearchResponse, Update};
 use crate::ui::dialogs::Confirm;
@@ -42,6 +43,9 @@ pub struct Editor {
     /// The world whose data packs are open on the Worlds tab.
     pack_world: Option<World>,
     renaming: Option<(World, String)>,
+    show_saved_logs: bool,
+    saved_logs: Option<Vec<SavedLog>>,
+    open_log: Option<(String, console::Console)>,
     stale: bool,
     /// Numbers each read, so only the answer to the latest one is used.
     request: u64,
@@ -72,6 +76,9 @@ impl Editor {
             worlds: None,
             pack_world: None,
             renaming: None,
+            show_saved_logs: false,
+            saved_logs: None,
+            open_log: None,
             stale: true,
             request: 0,
             browse: false,
@@ -117,6 +124,18 @@ impl Editor {
     pub fn on_worlds(&mut self, request: u64, worlds: Vec<World>) {
         if request == self.request {
             self.worlds = Some(worlds);
+        }
+    }
+
+    pub fn on_saved_logs(&mut self, request: u64, logs: Vec<SavedLog>) {
+        if request == self.request {
+            self.saved_logs = Some(logs);
+        }
+    }
+
+    pub fn on_saved_log(&mut self, name: String, text: &str) {
+        if self.show_saved_logs {
+            self.open_log = Some((name, console::Console::saved(text)));
         }
     }
 
@@ -211,11 +230,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             Tab::Settings => settings(app, ui, &mut ed),
             Tab::Content(kind) => content(app, ui, &mut ed, kind),
             Tab::Worlds => worlds(app, ui, &mut ed),
-            Tab::Log => {
-                let id = ed.inst.id.clone();
-                let action = app.consoles.entry(id.clone()).or_default().ui(ui);
-                console::handle(app, &id, action);
-            }
+            Tab::Log => log_tab(app, ui, &mut ed),
         }
     });
     let esc = !ed.esc_taken
@@ -499,6 +514,75 @@ fn content(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind)
     }
 }
 
+fn log_tab(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
+    if widgets::segmented(ui, &mut ed.show_saved_logs, &[(false, "This session"), (true, "Saved logs")]) {
+        ed.saved_logs = None;
+        ed.open_log = None;
+        ed.stale = true;
+    }
+    ui.add_space(theme::S3);
+    if !ed.show_saved_logs {
+        let action = app.consoles.entry(ed.inst.id.clone()).or_default().ui(ui);
+        console::handle(app, action);
+        return;
+    }
+    if let Some((name, log)) = &mut ed.open_log {
+        let mut back = false;
+        ui.horizontal(|ui| {
+            back = widgets::pill(ui, Kind::Ghost, None, "Back to saved logs").clicked();
+            ui.label(RichText::new(name.as_str()).color(theme::TEXT_MUTED));
+        });
+        ui.add_space(theme::S2);
+        let action = log.ui(ui);
+        console::handle(app, action);
+        if back {
+            ed.open_log = None;
+        }
+        return;
+    }
+    if let Some(request) = ed.start_read() {
+        let (inst, bus) = (ed.inst.clone(), app.bus.clone());
+        app.rt.spawn_blocking(move || {
+            let saved = logs::list(&inst.game_dir());
+            bus.send(Event::SavedLogs { inst: inst.id, request, logs: saved });
+        });
+    }
+    let Some(saved) = &ed.saved_logs else {
+        ui.add(egui::Spinner::new().color(theme::ACCENT));
+        return;
+    };
+    if saved.is_empty() {
+        widgets::empty_state(ui, "No saved logs", "Logs and crash reports show up here after you play.", |_| {});
+        return;
+    }
+    let mut open = None;
+    egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = widgets::LIST_GAP;
+        for log in saved {
+            let (row, response) = widgets::list_row(ui, 52.0, Sense::click(), false);
+            if !ui.is_rect_visible(row) {
+                continue;
+            }
+            let (x, width) = (row.left() + theme::S3, row.width() - 2.0 * theme::S3);
+            widgets::line(ui, Pos2::new(x, row.top() + 8.0), &log.name, theme::body_strong(), theme::TEXT, width);
+            let when = days_ago("Saved", log.modified);
+            widgets::line(ui, Pos2::new(x, row.top() + 27.0), &when, theme::label(), theme::TEXT_MUTED, width);
+            if response.clicked() {
+                open = Some(log.clone());
+            }
+        }
+    });
+    if let Some(log) = open {
+        let (id, bus) = (ed.inst.id.clone(), app.bus.clone());
+        app.spawn(async move {
+            let path = log.path.clone();
+            let text = tokio::task::spawn_blocking(move || logs::read(&path)).await??;
+            bus.send(Event::SavedLog { inst: id, name: log.name, text });
+            Ok(())
+        });
+    }
+}
+
 fn add_files(app: &mut App, ed: &mut Editor, kind: ContentKind, files: Vec<PathBuf>) {
     let (inst, bus) = (ed.inst.clone(), app.bus.clone());
     let world = ed.pack_world.as_ref().map(|w| w.path.clone());
@@ -707,13 +791,13 @@ fn browse(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind) 
         None => {}
     }
 }
-fn days_ago(modified: Option<std::time::SystemTime>) -> String {
+fn days_ago(verb: &str, modified: Option<std::time::SystemTime>) -> String {
     modified
         .and_then(|m| m.elapsed().ok())
         .map(|d| match d.as_secs() / 86_400 {
-            0 => "Played today".to_string(),
-            1 => "Played yesterday".to_string(),
-            n => format!("Played {n} days ago"),
+            0 => format!("{verb} today"),
+            1 => format!("{verb} yesterday"),
+            n => format!("{verb} {n} days ago"),
         })
         .unwrap_or_default()
 }
@@ -784,7 +868,7 @@ fn worlds(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
             let x = row.left() + theme::S3;
             let w = buttons.left() - x - theme::S2;
             let cut = widgets::line(ui, Pos2::new(x, row.top() + 8.0), &world.name, theme::body_strong(), theme::TEXT, w);
-            widgets::line(ui, Pos2::new(x, row.top() + 27.0), &days_ago(world.modified), theme::label(), theme::TEXT_MUTED, w);
+            widgets::line(ui, Pos2::new(x, row.top() + 27.0), &days_ago("Played", world.modified), theme::label(), theme::TEXT_MUTED, w);
             if cut {
                 let text = Rect::from_min_max(row.min, Pos2::new(buttons.left(), row.bottom()));
                 ui.interact(text, ui.id().with(("world", &world.path)), Sense::hover()).on_hover_text(&world.name);

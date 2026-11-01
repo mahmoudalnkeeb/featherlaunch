@@ -4,6 +4,7 @@
 pub mod auth;
 pub mod instance;
 pub mod launch;
+pub mod logs;
 pub mod meta;
 pub mod skin;
 pub mod world;
