@@ -35,8 +35,8 @@ winresource = "0.1"
 [target.'cfg(windows)'.dependencies]
 # Schannel: no OpenSSL to ship.
 reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json", "stream", "multipart"] }
-# Borderless window style fix (src/ui/chrome.rs).
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }
+# Borderless window style fix (src/ui/chrome.rs) and RAM size (src/sysmem.rs).
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_SystemInformation", "Win32_UI_WindowsAndMessaging"] }
 raw-window-handle = "0.6"
 
 [target.'cfg(not(windows))'.dependencies]
