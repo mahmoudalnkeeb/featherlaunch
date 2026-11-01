@@ -289,7 +289,8 @@ fn settings(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
             widgets::form_row(ui, "Minecraft", |ui| {
                 let current = d.mc_version.clone();
                 widgets::combo("mc", &current, 200.0).show_ui(ui, |ui| {
-                    for v in app.manifest.iter().flatten().filter(|v| v.kind == "release" || v.id == current) {
+                    for v in app.manifest.iter().flatten().filter(|v| v.kind == "release" || v.kind.starts_with("old_") || v.id == current)
+                    {
                         if ui.selectable_value(&mut d.mc_version, v.id.clone(), &v.id).changed() {
                             d.loader_version = None;
                         }
