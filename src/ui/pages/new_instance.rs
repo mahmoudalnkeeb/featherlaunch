@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! The "new instance" page: a custom version and loader, a Modrinth modpack, or a local .mrpack.
 
+use std::path::PathBuf;
+
 use eframe::egui::{self, CornerRadius, Layout, Pos2, Rect, RichText, Sense, UiBuilder, vec2};
 
 use crate::minecraft::instance::{Instance, Loader};
@@ -8,7 +10,7 @@ use crate::modplatform::modrinth::{ContentKind, Version};
 use crate::modplatform::mrpack;
 use crate::ui::project::{self, Browser, Request};
 use crate::ui::widgets::{self, Kind};
-use crate::ui::{App, Page, theme};
+use crate::ui::{App, Event, Page, theme};
 
 const SIDE_WIDTH: f32 = 240.0;
 const PACK_FOOTER: f32 = 72.0;
@@ -329,7 +331,7 @@ fn modpacks(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
     let parallel = app.cfg.parallel_downloads;
     app.cancellable_task(format!("Installing {}", pack.title), move |progress, bus| async move {
         let inst = mrpack::install_from_modrinth(&version, &pack.title, pack.icon_url.as_deref(), group, parallel, &progress).await?;
-        bus.send(crate::ui::Event::InstancesChanged(Some(inst.id)));
+        bus.send(Event::InstancesChanged(Some(inst.id)));
         Ok(())
     });
     true
@@ -348,16 +350,28 @@ fn import(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
             && let Some(path) = rfd::FileDialog::new().add_filter("Modrinth modpack", &["mrpack"]).pick_file()
         {
             let group = st.group.trim().to_string();
-            let parallel = app.cfg.parallel_downloads;
-            app.cancellable_task("Importing modpack", move |progress, bus| async move {
-                let inst = mrpack::import(path, group, parallel, &progress).await?;
-                bus.send(crate::ui::Event::InstancesChanged(Some(inst.id)));
+            let bus = app.bus.clone();
+            app.spawn(async move {
+                let pack = path.clone();
+                let files = tokio::task::spawn_blocking(move || mrpack::unchecked_files(&pack)).await??;
+                bus.send(Event::PackRead { path, group, files });
                 Ok(())
             });
             close = true;
         }
     });
     close
+}
+
+impl App {
+    pub fn import_pack(&mut self, path: PathBuf, group: String) {
+        let parallel = self.cfg.parallel_downloads;
+        self.cancellable_task("Importing modpack", move |progress, bus| async move {
+            let inst = mrpack::import(path, group, parallel, &progress).await?;
+            bus.send(Event::InstancesChanged(Some(inst.id)));
+            Ok(())
+        });
+    }
 }
 
 #[cfg(test)]

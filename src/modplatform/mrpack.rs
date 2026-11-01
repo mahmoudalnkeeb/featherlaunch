@@ -88,6 +88,24 @@ pub fn read_index(pack: &Path) -> Result<PackIndex> {
     Ok(serde_json::from_str(&text)?)
 }
 
+/// Files in a pack from outside Modrinth that Modrinth hasn't reviewed: ones hosted elsewhere, and
+/// mods bundled in its overrides. Mods run as code on the player's PC.
+pub fn unchecked_files(pack: &Path) -> Result<Vec<String>> {
+    let index = read_index(pack)?;
+    let hosted_elsewhere =
+        |f: &&PackFile| f.downloads.iter().any(|u| reqwest::Url::parse(u).map_or(true, |u| u.host_str() != Some("cdn.modrinth.com")));
+    let mut files: Vec<String> = index.files.iter().filter(hosted_elsewhere).map(|f| f.path.clone()).collect();
+    let archive = zip::ZipArchive::new(std::fs::File::open(pack)?)?;
+    files.extend(
+        archive
+            .file_names()
+            .filter(|name| !name.ends_with('/'))
+            .filter(|name| ["overrides/mods/", "client-overrides/mods/"].iter().any(|p| name.starts_with(p)))
+            .map(str::to_string),
+    );
+    Ok(files)
+}
+
 fn extract_overrides(pack: &Path, game_dir: &Path) -> Result<()> {
     let mut archive = zip::ZipArchive::new(std::fs::File::open(pack)?)?;
     // client-overrides are applied after overrides so they win.
@@ -219,6 +237,27 @@ mod tests {
         let deps = HashMap::from([("minecraft".to_string(), "1.20.1".to_string()), ("fabric-loader".to_string(), "0.16.9".to_string())]);
         let (mc, loader, v) = loader_of(&deps).unwrap();
         assert_eq!((mc.as_str(), loader, v.as_deref()), ("1.20.1", Loader::Fabric, Some("0.16.9")));
+    }
+
+    #[test]
+    fn finds_files_modrinth_has_not_reviewed() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!("featherlaunch-test-{}.mrpack", uuid::Uuid::new_v4().simple()));
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("modrinth.index.json", options).unwrap();
+        let index = r#"{"name":"Pack","dependencies":{"minecraft":"1.21"},"files":[
+            {"path":"mods/safe.jar","hashes":{},"downloads":["https://cdn.modrinth.com/a.jar"]},
+            {"path":"mods/github.jar","hashes":{},"downloads":["https://github.com/a.jar"]}]}"#;
+        zip.write_all(index.as_bytes()).unwrap();
+        for name in ["overrides/config/a.toml", "overrides/mods/bundled.jar", "client-overrides/mods/client.jar"] {
+            zip.start_file(name, options).unwrap();
+        }
+        zip.finish().unwrap();
+
+        let files = unchecked_files(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(files, ["mods/github.jar", "overrides/mods/bundled.jar", "client-overrides/mods/client.jar"]);
     }
 
     #[test]
