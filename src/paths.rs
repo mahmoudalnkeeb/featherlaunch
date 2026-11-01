@@ -23,8 +23,16 @@ pub fn root() -> &'static PathBuf {
     })
 }
 
+/// Where the player moved their instances to, if they did.
+static INSTANCES: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+pub fn set_instances(dir: Option<PathBuf>) {
+    *INSTANCES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = dir;
+}
+
 pub fn instances() -> PathBuf {
-    root().join("instances")
+    let moved = INSTANCES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+    moved.unwrap_or_else(|| root().join("instances"))
 }
 pub fn libraries() -> PathBuf {
     root().join("libraries")
@@ -146,6 +154,30 @@ pub fn write_json(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Moves a folder's contents into `to`, which must be empty or new. A failure leaves `from` whole.
+pub fn move_dir(from: &Path, to: &Path) -> anyhow::Result<()> {
+    if to.starts_with(from) {
+        anyhow::bail!("that folder is inside the current one");
+    }
+    if to.exists() && std::fs::read_dir(to)?.next().is_some() {
+        anyhow::bail!("choose an empty folder");
+    }
+    // On the same drive this is instant, and it only works with `to` gone.
+    let _ = std::fs::remove_dir(to);
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    if let Err(e) = copy_dir(from, to) {
+        let _ = std::fs::remove_dir_all(to);
+        return Err(e.into());
+    }
+    std::fs::remove_dir_all(from)?;
+    Ok(())
+}
+
 pub fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
@@ -163,6 +195,28 @@ pub fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moves_a_folder_only_into_an_empty_place() {
+        let dir = std::env::temp_dir().join(format!("featherlaunch-test-{}", uuid::Uuid::new_v4().simple()));
+        let from = dir.join("from");
+        std::fs::create_dir_all(from.join("One")).unwrap();
+        std::fs::write(from.join("One/instance.json"), "{}").unwrap();
+
+        assert!(move_dir(&from, &from.join("inside")).is_err());
+        let full = dir.join("full");
+        std::fs::create_dir_all(&full).unwrap();
+        std::fs::write(full.join("x"), "").unwrap();
+        assert!(move_dir(&from, &full).is_err());
+        assert!(from.join("One/instance.json").exists(), "a refused move changes nothing");
+
+        let empty = dir.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        move_dir(&from, &empty).unwrap();
+        assert!(empty.join("One/instance.json").exists());
+        assert!(!from.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn recognizes_only_temporary_pack_downloads() {

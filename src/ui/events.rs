@@ -31,6 +31,7 @@ pub enum Event {
     LoaderVersionsFailed { loader: Loader, mc: String },
     InstancesChanged(Option<String>),
     InstanceDeleted(String),
+    InstancesMoved(PathBuf),
     InstanceIconChanged(String),
     PackRead { path: PathBuf, group: String, update: Option<String>, files: Vec<String> },
     PackUpdated(String),
@@ -100,6 +101,18 @@ impl App {
                     self.loader_failed.insert((loader, mc));
                 }
                 Event::InstancesChanged(select) => self.reload_instances(select),
+                Event::InstancesMoved(dir) => {
+                    crate::paths::set_instances(Some(dir.clone()));
+                    self.cfg.instances_dir = Some(dir.to_string_lossy().into_owned());
+                    if let Some(draft) = &mut self.settings_draft {
+                        draft.instances_dir = self.cfg.instances_dir.clone();
+                    }
+                    if let Err(e) = self.cfg.save() {
+                        self.errors.push(format!("Saving settings failed: {e:#}"));
+                    }
+                    self.reload_instances(None);
+                    self.notify("Instances moved");
+                }
                 Event::InstanceDeleted(id) => {
                     self.deleting.remove(&id);
                     self.reload_instances(None);
