@@ -19,6 +19,7 @@ pub const LOW_END_JVM_ARGS: &str = "-XX:+UnlockExperimentalVMOptions -XX:+UseG1G
 #[serde(default)]
 pub struct Config {
     pub memory_mb: u32,
+    pub low_memory_warning: bool,
     pub jvm_args: String,
     /// Global Java override; `None` picks or downloads the right Java automatically.
     pub java_path: Option<String>,
@@ -34,7 +35,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            memory_mb: 3072,
+            memory_mb: crate::sysmem::read().map_or(3072, |ram| crate::sysmem::default_memory_mb(ram.total_mb)),
+            low_memory_warning: true,
             jvm_args: LOW_END_JVM_ARGS.to_string(),
             java_path: None,
             ignore_java_check: false,

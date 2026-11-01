@@ -23,6 +23,12 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                 widgets::slider(ui, &mut draft.memory_mb, 512..=16384, 256.0, " MB");
                 widgets::hint(ui, "3–4 GB suits most modpacks on a 16 GB PC.");
             });
+            widgets::form_row(ui, "Low memory", |ui| {
+                ui.horizontal(|ui| {
+                    ui.set_min_height(theme::H_MD);
+                    widgets::toggle_labeled(ui, &mut draft.low_memory_warning, "Warn before launching when free memory is low");
+                });
+            });
             widgets::form_row(ui, "When the game starts", |ui| {
                 let mut choice = draft.on_launch;
                 let items = [(OnLaunch::Minimize, "Minimize"), (OnLaunch::Close, "Close"), (OnLaunch::KeepOpen, "Keep open")];

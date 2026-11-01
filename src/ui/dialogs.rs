@@ -13,6 +13,7 @@ pub enum Confirm {
     DeleteFile { inst: Box<Instance>, kind: ContentKind, file: Box<LocalFile> },
     RemoveAccount(String),
     Discard(Page),
+    LowMemory { id: String, offline: bool, memory_mb: u32, free_mb: u64 },
 }
 
 struct Prompt {
@@ -66,6 +67,14 @@ fn prompt(app: &App, confirm: &Confirm) -> Option<Prompt> {
             confirm: "Discard",
             enabled: true,
         },
+        Confirm::LowMemory { memory_mb, free_mb, .. } => Prompt {
+            title: "Low free memory",
+            body: format!("The game can use up to {memory_mb} MB, but only {free_mb} MB is free."),
+            note: Some(("Launching may slow down your PC. Closing other apps frees memory.".to_string(), theme::WARN)),
+            cancel: "Cancel",
+            confirm: "Launch anyway",
+            enabled: true,
+        },
     })
 }
 
@@ -90,6 +99,7 @@ fn apply(app: &mut App, confirm: Confirm) {
             app.save_accounts();
         }
         Confirm::Discard(page) => app.go_now(page),
+        Confirm::LowMemory { id, offline, .. } => app.launch_despite_low_memory(&id, offline),
     }
 }
 
