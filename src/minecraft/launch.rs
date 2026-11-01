@@ -150,8 +150,26 @@ pub async fn prepare(inst: &Instance, account: &Account, offline: bool, cfg: &Co
         (None, None) => {}
     }
     args.extend(window_args(window, version.minecraft_arguments.is_some()));
+    let quick_play = version.arguments.as_ref().is_some_and(|a| a.quick_play());
+    args.extend(join_args(inst.join_server.as_deref(), inst.join_world.as_deref(), quick_play));
 
     Ok(Prepared { java, args, game_dir, notes })
+}
+
+/// Older versions can only join servers, and name the port separately.
+fn join_args(server: Option<&str>, world: Option<&str>, quick_play: bool) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(server) = server {
+        if quick_play {
+            args.extend(["--quickPlayMultiplayer".to_string(), server.to_string()]);
+        } else {
+            let (host, port) = server.split_once(':').unwrap_or((server, "25565"));
+            args.extend(["--server".to_string(), host.to_string(), "--port".to_string(), port.to_string()]);
+        }
+    } else if let Some(world) = world.filter(|_| quick_play) {
+        args.extend(["--quickPlaySingleplayer".to_string(), world.to_string()]);
+    }
+    args
 }
 
 /// Newer version files ask for the size themselves through `has_custom_resolution`.
@@ -455,6 +473,16 @@ fn shorten(text: &str, chars: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joins_servers_in_each_version_format() {
+        assert_eq!(join_args(Some("a.example:1"), None, true), ["--quickPlayMultiplayer", "a.example:1"]);
+        assert_eq!(join_args(Some("a.example:1"), None, false), ["--server", "a.example", "--port", "1"]);
+        assert_eq!(join_args(Some("a.example"), None, false), ["--server", "a.example", "--port", "25565"]);
+        assert_eq!(join_args(None, Some("Home"), true), ["--quickPlaySingleplayer", "Home"]);
+        assert!(join_args(None, Some("Home"), false).is_empty());
+        assert!(join_args(None, None, true).is_empty());
+    }
 
     #[test]
     fn window_arguments_depend_on_the_version_format() {

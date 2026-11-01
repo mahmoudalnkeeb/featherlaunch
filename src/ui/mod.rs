@@ -8,6 +8,7 @@ use std::sync::{Arc, mpsc};
 use anyhow::Context as _;
 use eframe::egui;
 
+use crate::cli::Args;
 use crate::config::Config;
 use crate::java::{self, JavaInstall};
 use crate::minecraft::auth::{self, AccountKind, AccountStore, DeviceCode};
@@ -82,11 +83,13 @@ pub struct App {
     confirm: Option<dialogs::Confirm>,
     optional: Vec<dialogs::OptionalFiles>,
     deleting: HashSet<String>,
+    /// Where the launch asked for on the command line goes, for that launch only.
+    join_once: Option<(Option<String>, Option<String>)>,
     launcher_update: LauncherUpdate,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext, rt: tokio::runtime::Handle) -> Self {
+    pub fn new(cc: &eframe::CreationContext, rt: tokio::runtime::Handle, args: Args) -> Self {
         theme::apply(&cc.egui_ctx);
         let (tx, rx) = mpsc::channel();
         let cfg = Config::load();
@@ -125,11 +128,30 @@ impl App {
             confirm: None,
             optional: Vec::new(),
             deleting: HashSet::new(),
+            join_once: None,
             launcher_update: Default::default(),
         };
         app.selected = app.instances.first().map(|i| i.id.clone());
         app.startup();
+        app.follow_args(args);
         app
+    }
+
+    fn follow_args(&mut self, args: Args) {
+        if let Some(profile) = args.profile {
+            match self.accounts.accounts.iter().find(|a| a.name.eq_ignore_ascii_case(&profile)) {
+                Some(account) => self.accounts.selected = Some(account.id.clone()),
+                None => self.warn(format!("No account named {profile}")),
+            }
+        }
+        let Some(target) = args.launch else { return };
+        let Some(id) = self.instances.iter().find(|i| i.id == target || i.name == target).map(|i| i.id.clone()) else {
+            self.warn(format!("No instance named {target}"));
+            return;
+        };
+        self.join_once = Some((args.server, args.world));
+        self.selected = Some(id.clone());
+        self.launch(&id, args.offline);
     }
 
     fn startup(&mut self) {

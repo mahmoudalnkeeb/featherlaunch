@@ -54,8 +54,9 @@ impl App {
         if self.running.contains_key(id) {
             return;
         }
-        let Some(inst) = self.instance(id).cloned() else { return };
-        let Some(account) = self.accounts.selected().cloned() else {
+        let Some(mut inst) = self.instance(id).cloned() else { return };
+        let chosen = inst.account_id.as_ref().and_then(|id| self.accounts.accounts.iter().find(|a| a.id == *id));
+        let Some(account) = chosen.or(self.accounts.selected()).cloned() else {
             self.warn("Sign in with a Microsoft account before launching.");
             self.go(Page::Accounts);
             return;
@@ -73,6 +74,10 @@ impl App {
         {
             self.confirm = Some(Confirm::LowMemory { id: id.to_string(), offline, memory_mb, free_mb: ram.available_mb });
             return;
+        }
+        if let Some((server, world)) = self.join_once.take() {
+            inst.join_server = server.or(inst.join_server);
+            inst.join_world = world;
         }
         self.consoles.insert(id.to_string(), console::Console::default());
         if cfg.open_console_on_launch {

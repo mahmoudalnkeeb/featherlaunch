@@ -179,7 +179,7 @@ fn import_own_zip(path: &Path, group: String) -> Result<Instance> {
     let mut archive = ZipArchive::new(File::open(path)?)?;
     let saved: Instance = serde_json::from_str(&read_entry(&mut archive, "instance.json")?).context("reading instance.json")?;
     // A path from the PC it was exported on, and JVM arguments, which can run any command.
-    let inst = Instance { group, java_path: None, jvm_args: None, ..saved }.create()?;
+    let inst = Instance { group, java_path: None, jvm_args: None, join_server: None, account_id: None, ..saved }.create()?;
     let dir = inst.dir();
     let partial = PartialInstance::new(inst);
     extract_under(&mut archive, ".minecraft/", &dir.join(".minecraft"))?;

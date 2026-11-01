@@ -12,6 +12,11 @@ use serde::de::DeserializeOwned;
 
 static ROOT: OnceLock<PathBuf> = OnceLock::new();
 
+/// Must run before anything reads [`root`].
+pub fn set_root(dir: PathBuf) {
+    let _ = ROOT.set(dir);
+}
+
 pub fn root() -> &'static PathBuf {
     ROOT.get_or_init(|| {
         if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from))
