@@ -12,7 +12,6 @@ use zip::ZipArchive;
 
 use crate::log;
 use crate::minecraft::instance::{Instance, Loader, PackSource};
-use crate::modplatform::curseforge;
 use crate::modplatform::modrinth::ContentKind;
 use crate::modplatform::mrpack::{self, PartialInstance, safe_rel_path};
 use crate::paths;
@@ -190,25 +189,24 @@ fn import_own_zip(path: &Path, group: String) -> Result<Instance> {
     Ok(partial.keep())
 }
 
-/// Makes an instance from a pack or instance file, with anything the player needs to hear about it.
-pub async fn import_file(path: PathBuf, group: String, parallel: usize, progress: &Progress) -> Result<(Instance, Option<String>)> {
+/// Makes an instance from a pack or instance file.
+pub async fn import_file(path: PathBuf, group: String, parallel: usize, progress: &Progress) -> Result<Instance> {
     progress.set_label("Reading file");
     let file = path.clone();
     let kind = tokio::task::spawn_blocking(move || detect(&file)).await??;
-    match kind {
-        ArchiveKind::Modrinth => return Ok((mrpack::import(path, group, parallel, progress).await?, None)),
-        ArchiveKind::CurseForge => return curseforge::import_pack(&path, group, parallel, progress).await,
-        _ => {}
+    if kind == ArchiveKind::Modrinth {
+        return mrpack::import(path, group, parallel, progress).await;
     }
     progress.set_label("Copying files");
     // Extraction runs on a blocking thread that a cancel would not stop.
     let _critical = progress.critical();
-    let inst = tokio::task::spawn_blocking(move || match kind {
+    tokio::task::spawn_blocking(move || match kind {
+        ArchiveKind::FeatherLaunch => import_own_zip(&path, group),
         ArchiveKind::Launcher { root } => import_launcher_zip(&path, &root, group),
-        _ => import_own_zip(&path, group),
+        ArchiveKind::CurseForge => bail!("CurseForge packs aren't supported yet"),
+        ArchiveKind::Modrinth => unreachable!("handled above"),
     })
-    .await??;
-    Ok((inst, None))
+    .await?
 }
 
 /// The instance folders at `dir`: it may be one, a launcher's `instances` folder, or its data folder.

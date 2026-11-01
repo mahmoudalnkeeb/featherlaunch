@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::minecraft::instance::{Instance, Loader};
-use crate::modplatform::{curseforge, jar_meta, mrpack};
+use crate::modplatform::{jar_meta, mrpack};
 use crate::net::{self, Download};
 use crate::paths;
 use crate::tasks::Progress;
@@ -190,9 +190,6 @@ pub async fn search(query: &str, kind: ContentKind, mc: Option<&str>, loader: Op
 }
 
 pub async fn project_versions(project: &str, kind: ContentKind, mc: Option<&str>, loader: Option<Loader>) -> Result<Vec<Version>> {
-    if let Some(id) = project.strip_prefix(curseforge::PREFIX) {
-        return curseforge::versions(id, kind, mc, loader).await;
-    }
     let mut query: Vec<(&str, String)> = Vec::new();
     if let Some(mc) = mc {
         query.push(("game_versions", json!([mc]).to_string()));
@@ -215,9 +212,6 @@ async fn version(id: &str) -> Result<Version> {
 }
 
 async fn project_meta(id: &str) -> ProjectMeta {
-    if let Some(cf) = id.strip_prefix(curseforge::PREFIX) {
-        return curseforge::meta(cf).await.unwrap_or_else(|_| ProjectMeta { title: id.to_string(), icon_url: None });
-    }
     #[derive(Deserialize)]
     struct P {
         title: String,
@@ -440,14 +434,13 @@ pub struct Update {
 }
 
 pub async fn check_updates(inst: &Instance, kind: ContentKind) -> Result<Vec<Update>> {
-    let mut updates = curseforge::updates(inst, kind).await?;
     let files = list_local(inst, kind);
     let hashed: Vec<(String, LocalFile)> = tokio::task::spawn_blocking(move || {
         files.into_iter().filter(|f| f.path.is_file()).filter_map(|f| net::sha1_file(&f.path).ok().map(|h| (h, f))).collect()
     })
     .await?;
     if hashed.is_empty() {
-        return Ok(updates);
+        return Ok(Vec::new());
     }
     let mut body = json!({
         "hashes": hashed.iter().map(|(h, _)| h).collect::<Vec<_>>(),
@@ -459,12 +452,14 @@ pub async fn check_updates(inst: &Instance, kind: ContentKind) -> Result<Vec<Upd
     }
     let latest: HashMap<String, Version> =
         net::client().post(format!("{API}/version_files/update")).json(&body).send().await?.error_for_status()?.json().await?;
-    updates.extend(hashed.into_iter().filter_map(|(hash, file)| {
-        let v = latest.get(&hash)?;
-        let current = v.files.iter().any(|f| f.hashes.get("sha1") == Some(&hash));
-        (!current).then(|| Update { file, version: v.clone() })
-    }));
-    Ok(updates)
+    Ok(hashed
+        .into_iter()
+        .filter_map(|(hash, file)| {
+            let v = latest.get(&hash)?;
+            let current = v.files.iter().any(|f| f.hashes.get("sha1") == Some(&hash));
+            (!current).then(|| Update { file, version: v.clone() })
+        })
+        .collect())
 }
 
 /// The versions Modrinth has for these SHA-1 hashes. Unknown hashes are left out.
@@ -499,7 +494,6 @@ pub async fn identify(inst: &Instance, kind: ContentKind) -> Result<bool> {
         .filter(|f| f.title.is_some() && f.icon_url.is_none())
         .filter_map(|f| index.files.get(&ContentIndex::key(kind.folder(), &f.file_name)).map(|e| e.project_id.clone()))
         .chain(found.iter().map(|(_, v)| v.project_id.clone()))
-        .filter(|id| !id.starts_with(curseforge::PREFIX))
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();

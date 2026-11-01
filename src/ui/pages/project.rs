@@ -5,7 +5,6 @@
 
 use eframe::egui::{self, Layout, Rect, RichText, Sense, Ui, UiBuilder, vec2};
 
-use crate::modplatform::curseforge;
 use crate::modplatform::modrinth::{SearchHit, SearchResponse, Version};
 use crate::ui::icons::Icons;
 use crate::ui::theme;
@@ -29,8 +28,6 @@ pub struct Browser {
     pub versions: Option<Vec<Version>>,
     pub versions_failed: bool,
     pub version_idx: usize,
-    /// Searching CurseForge instead of Modrinth.
-    pub curseforge: bool,
 }
 
 impl Browser {
@@ -62,7 +59,7 @@ impl Browser {
     }
 
     pub fn clear(&mut self) {
-        *self = Self { query: std::mem::take(&mut self.query), curseforge: self.curseforge, ..Default::default() };
+        *self = Self { query: std::mem::take(&mut self.query), ..Default::default() };
     }
 
     fn is_open(&self, project: &str) -> bool {
@@ -125,10 +122,6 @@ pub fn show(
     }
 
     ui.horizontal(|ui| {
-        if curseforge::available() && widgets::segmented(ui, &mut b.curseforge, &[(false, "Modrinth"), (true, "CurseForge")]) {
-            b.hit = None;
-            request = Some(Request::Search(0));
-        }
         let width = (ui.available_width() / 2.0).clamp(180.0, 300.0);
         let r = widgets::search(ui, &mut b.query, hint, width);
         if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -168,7 +161,7 @@ fn list(ui: &mut Ui, icons: &Icons, b: &mut Browser, request: &mut Option<Reques
     egui::ScrollArea::vertical().id_salt("results").max_height(height).auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = widgets::LIST_GAP;
         if b.search_failed {
-            if widgets::notice(ui, theme::ERR, "Couldn't reach the server.", Some("Try again")) {
+            if widgets::notice(ui, theme::ERR, "Couldn't reach Modrinth.", Some("Try again")) {
                 *request = Some(Request::Search(b.offset));
             }
             return;
