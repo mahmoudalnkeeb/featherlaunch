@@ -22,6 +22,8 @@ pub enum ContentKind {
     ResourcePack,
     ShaderPack,
     Modpack,
+    /// Kept per world, in `datapacks` inside the world's folder.
+    DataPack,
 }
 
 impl ContentKind {
@@ -31,6 +33,7 @@ impl ContentKind {
             ContentKind::ResourcePack => "resourcepack",
             ContentKind::ShaderPack => "shader",
             ContentKind::Modpack => "modpack",
+            ContentKind::DataPack => "datapack",
         }
     }
 
@@ -40,6 +43,7 @@ impl ContentKind {
             ContentKind::ResourcePack => "resourcepacks",
             ContentKind::ShaderPack => "shaderpacks",
             ContentKind::Modpack => "",
+            ContentKind::DataPack => "datapacks",
         }
     }
 
@@ -49,13 +53,14 @@ impl ContentKind {
             ContentKind::ResourcePack => "Resource packs",
             ContentKind::ShaderPack => "Shader packs",
             ContentKind::Modpack => "Modpacks",
+            ContentKind::DataPack => "Data packs",
         }
     }
 
     pub fn extensions(self) -> &'static [&'static str] {
         match self {
             ContentKind::Mod => &["jar", "zip", "litemod"],
-            ContentKind::ResourcePack | ContentKind::ShaderPack => &["zip"],
+            ContentKind::ResourcePack | ContentKind::ShaderPack | ContentKind::DataPack => &["zip"],
             ContentKind::Modpack => &[],
         }
     }
@@ -186,6 +191,10 @@ pub async fn project_versions(project: &str, kind: ContentKind, mc: Option<&str>
     let mut query: Vec<(&str, String)> = Vec::new();
     if let Some(mc) = mc {
         query.push(("game_versions", json!([mc]).to_string()));
+    }
+    // Many data packs also come as mods, and those files wouldn't work in a world.
+    if kind == ContentKind::DataPack {
+        query.push(("loaders", json!(["datapack"]).to_string()));
     }
     if let Some(loader) = loader.filter(|_| kind.uses_loader())
         && !loader.modrinth_names().is_empty()
@@ -568,9 +577,50 @@ pub fn delete_local(inst: &Instance, kind: ContentKind, file: &LocalFile) -> Res
     Ok(())
 }
 
+/// Downloads a data pack into a world. Packs have no dependencies to follow, and the file is
+/// named by its version, so nothing needs tracking.
+pub async fn install_data_pack(world: &Path, version: &Version, progress: &Progress) -> Result<()> {
+    let file = version.primary_file().context("this version has no files")?;
+    let mut d = Download::new(&file.url, world.join(ContentKind::DataPack.folder()).join(safe_file_name(&file.filename)?));
+    d.sha1 = file.hashes.get("sha1").cloned();
+    net::download_tracked(&d, Some(progress)).await
+}
+
+/// The files in a world's data pack folder.
+pub fn list_data_packs(world: &Path) -> Vec<LocalFile> {
+    let Ok(entries) = std::fs::read_dir(world.join(ContentKind::DataPack.folder())) else { return Vec::new() };
+    let mut out: Vec<LocalFile> = entries
+        .flatten()
+        .filter_map(|e| {
+            let file_name = e.file_name().into_string().ok()?;
+            Some(LocalFile {
+                enabled: !file_name.ends_with(".disabled"),
+                path: e.path(),
+                indexed: false,
+                title: None,
+                version: None,
+                icon_url: None,
+                file_name,
+            })
+        })
+        .collect();
+    out.sort_by_key(|f| f.file_name.to_lowercase());
+    out
+}
+
 /// Copies the files that belong in `kind`'s folder and returns how many that was.
 pub fn add_files(inst: &Instance, kind: ContentKind, files: &[PathBuf]) -> Result<usize> {
-    let dir = ensure_folder(inst, kind)?;
+    copy_into(&ensure_folder(inst, kind)?, kind, files)
+}
+
+/// Like [`add_files`], for a world's data pack folder.
+pub fn add_data_packs(world: &Path, files: &[PathBuf]) -> Result<usize> {
+    let dir = world.join(ContentKind::DataPack.folder());
+    std::fs::create_dir_all(&dir)?;
+    copy_into(&dir, ContentKind::DataPack, files)
+}
+
+fn copy_into(dir: &Path, kind: ContentKind, files: &[PathBuf]) -> Result<usize> {
     let mut added = 0;
     for file in files.iter().filter(|f| f.is_file() && kind.accepts(f)) {
         let name = file.file_name().context("file has no name")?;

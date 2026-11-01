@@ -6,3 +6,4 @@ pub mod instance;
 pub mod launch;
 pub mod meta;
 pub mod skin;
+pub mod world;

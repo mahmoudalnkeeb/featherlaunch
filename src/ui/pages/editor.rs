@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use eframe::egui::{self, Pos2, Rect, RichText, Sense, UiBuilder, vec2};
 
 use crate::minecraft::instance::{Instance, Loader, World};
+use crate::minecraft::world;
 use crate::modplatform::modrinth::{self, ContentKind, LocalFile, SearchResponse, Update};
 use crate::ui::dialogs::Confirm;
 use crate::ui::glyph::Glyph;
@@ -15,6 +16,8 @@ use crate::ui::widgets::{self, Kind};
 use crate::ui::{App, Event, Page, console, main_view, theme};
 
 const FOOTER_HEIGHT: f32 = 56.0;
+/// Room for a world row's buttons, leaving the rest of the row for its name.
+const WORLD_BUTTONS: f32 = 372.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -36,6 +39,9 @@ pub struct Editor {
     tab: Tab,
     files: Option<Vec<LocalFile>>,
     worlds: Option<Vec<World>>,
+    /// The world whose data packs are open on the Worlds tab.
+    pack_world: Option<World>,
+    renaming: Option<(World, String)>,
     stale: bool,
     /// Numbers each read, so only the answer to the latest one is used.
     request: u64,
@@ -64,6 +70,8 @@ impl Editor {
             tab,
             files: None,
             worlds: None,
+            pack_world: None,
+            renaming: None,
             stale: true,
             request: 0,
             browse: false,
@@ -117,16 +125,41 @@ impl Editor {
         self.draft.icon_stamp = stamp;
     }
 
+    fn browsing(&self, kind: ContentKind) -> bool {
+        self.tab == Tab::Content(kind) || (kind == ContentKind::DataPack && self.pack_world.is_some())
+    }
+
     pub fn on_search(&mut self, kind: ContentKind, offset: u64, results: SearchResponse) {
-        if self.tab == Tab::Content(kind) {
+        if self.browsing(kind) {
             self.browser.on_search(offset, results);
         }
     }
 
     pub fn on_search_failed(&mut self, kind: ContentKind) {
-        if self.tab == Tab::Content(kind) {
+        if self.browsing(kind) {
             self.browser.on_search_failed();
         }
+    }
+
+    fn open_data_packs(&mut self, world: World) {
+        self.pack_world = Some(world);
+        self.reset_content();
+    }
+
+    fn close_data_packs(&mut self) {
+        self.pack_world = None;
+        self.reset_content();
+    }
+
+    /// Clears what belongs to the list or search on screen.
+    fn reset_content(&mut self) {
+        self.files = None;
+        self.worlds = None;
+        self.stale = true;
+        self.browse = false;
+        self.updates.clear();
+        self.browser.clear();
+        self.searched_kind = None;
     }
 
     pub fn on_updates(&mut self, updates: Vec<Update>) {
@@ -136,13 +169,12 @@ impl Editor {
 
     pub fn set_tab(&mut self, tab: Tab) {
         if self.tab != tab {
+            let browse = self.browse;
             self.tab = tab;
-            self.files = None;
-            self.worlds = None;
-            self.stale = true;
-            self.updates.clear();
-            self.browser.clear();
-            self.searched_kind = None;
+            self.pack_world = None;
+            self.renaming = None;
+            self.reset_content();
+            self.browse = browse;
         }
     }
 }
@@ -469,9 +501,14 @@ fn content(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind)
 
 fn add_files(app: &mut App, ed: &mut Editor, kind: ContentKind, files: Vec<PathBuf>) {
     let (inst, bus) = (ed.inst.clone(), app.bus.clone());
+    let world = ed.pack_world.as_ref().map(|w| w.path.clone());
     ed.browse = false;
     app.spawn(async move {
-        let added = tokio::task::spawn_blocking(move || modrinth::add_files(&inst, kind, &files)).await??;
+        let added = tokio::task::spawn_blocking(move || match world {
+            Some(world) => modrinth::add_data_packs(&world, &files),
+            None => modrinth::add_files(&inst, kind, &files),
+        })
+        .await??;
         // Newly added files still need looking up on Modrinth.
         bus.send(Event::ContentChanged);
         bus.send(match added {
@@ -640,8 +677,14 @@ fn browse(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind) 
         request = Some(Request::Search(0));
     }
     if let (Some(version), Some(hit)) = (install, &ed.browser.hit) {
-        let (inst, meta) = (ed.inst.clone(), hit.meta());
+        let (inst, meta, world) = (ed.inst.clone(), hit.meta(), ed.pack_world.clone());
         app.cancellable_task(format!("Installing {}", meta.title), move |progress, bus| async move {
+            if let Some(world) = world {
+                modrinth::install_data_pack(&world.path, &version, &progress).await?;
+                bus.send(Event::ContentChanged);
+                bus.send(Event::Info(format!("Installed {} in {}", meta.title, world.name)));
+                return Ok(());
+            }
             let installed = modrinth::install(&inst, kind, version, meta, &progress).await?;
             bus.send(Event::ContentChanged);
             match installed.warning(&inst) {
@@ -675,7 +718,18 @@ fn days_ago(modified: Option<std::time::SystemTime>) -> String {
         .unwrap_or_default()
 }
 
+enum WorldAction {
+    DataPacks(World),
+    Copy(World),
+    Rename(World),
+    Delete(World),
+}
+
 fn worlds(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
+    if let Some(world) = ed.pack_world.clone() {
+        data_packs(app, ui, ed, &world);
+        return;
+    }
     if let Some(request) = ed.start_read() {
         let (inst, bus) = (ed.inst.clone(), app.bus.clone());
         app.rt.spawn_blocking(move || {
@@ -683,16 +737,32 @@ fn worlds(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
             bus.send(Event::Worlds { inst: inst.id, request, worlds });
         });
     }
+    rename_row(app, ui, ed);
     let Some(worlds) = &ed.worlds else {
         ui.add(egui::Spinner::new().color(theme::ACCENT));
         return;
     };
+    let running = app.running.contains_key(&ed.inst.id);
+    let saves = ed.inst.game_dir().join("saves");
     ui.horizontal(|ui| {
         let count = format!("{} world{}", worlds.len(), if worlds.len() == 1 { "" } else { "s" });
         ui.label(RichText::new(count).color(theme::TEXT_MUTED));
+        if running {
+            ui.label(RichText::new("Close the game to change worlds.").color(theme::TEXT_MUTED));
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if widgets::pill(ui, Kind::Ghost, None, "Open saves folder").clicked() {
-                app.open_folder(&ed.inst.game_dir().join("saves"));
+                app.open_folder(&saves);
+            }
+            if widgets::pill(ui, Kind::Ghost, None, "Import world").clicked()
+                && let Some(zip) = rfd::FileDialog::new().add_filter("World zip", &["zip"]).pick_file()
+            {
+                let saves = saves.clone();
+                app.task("Importing world", move |_, bus| async move {
+                    tokio::task::spawn_blocking(move || world::import_zip(&saves, &zip)).await??;
+                    bus.send(Event::ContentChanged);
+                    Ok(())
+                });
             }
         });
     });
@@ -701,6 +771,7 @@ fn worlds(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
         widgets::empty_state(ui, "No worlds yet", "Worlds you create in game show up here.", |_| {});
         return;
     }
+    let mut action = None;
     egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = widgets::LIST_GAP;
         for world in worlds {
@@ -708,19 +779,111 @@ fn worlds(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
             if !ui.is_rect_visible(row) {
                 continue;
             }
-            let button = Rect::from_min_size(row.right_top() - vec2(112.0, -12.0), vec2(100.0, theme::H_SM));
+            let buttons =
+                Rect::from_min_max(Pos2::new(row.right() - WORLD_BUTTONS, row.top()), Pos2::new(row.right() - theme::S3, row.bottom()));
             let x = row.left() + theme::S3;
-            let w = button.left() - x - theme::S2;
+            let w = buttons.left() - x - theme::S2;
             let cut = widgets::line(ui, Pos2::new(x, row.top() + 8.0), &world.name, theme::body_strong(), theme::TEXT, w);
             widgets::line(ui, Pos2::new(x, row.top() + 27.0), &days_ago(world.modified), theme::label(), theme::TEXT_MUTED, w);
             if cut {
-                let text = Rect::from_min_max(row.min, Pos2::new(button.left(), row.bottom()));
-                ui.interact(text, ui.id().with(("world", &world.name)), Sense::hover()).on_hover_text(&world.name);
+                let text = Rect::from_min_max(row.min, Pos2::new(buttons.left(), row.bottom()));
+                ui.interact(text, ui.id().with(("world", &world.path)), Sense::hover()).on_hover_text(&world.name);
             }
-            let mut child = ui.new_child(UiBuilder::new().max_rect(button).layout(egui::Layout::right_to_left(egui::Align::Center)));
+            let mut child = ui.new_child(UiBuilder::new().max_rect(buttons).layout(egui::Layout::right_to_left(egui::Align::Center)));
+            child.add_enabled_ui(!running, |ui| {
+                if widgets::icon_button(ui, Glyph::Trash, "Delete").clicked() {
+                    action = Some(WorldAction::Delete(world.clone()));
+                }
+                if widgets::pill_sized(ui, Kind::Ghost, None, "Rename", theme::H_SM).clicked() {
+                    action = Some(WorldAction::Rename(world.clone()));
+                }
+                if widgets::pill_sized(ui, Kind::Ghost, None, "Copy", theme::H_SM).clicked() {
+                    action = Some(WorldAction::Copy(world.clone()));
+                }
+            });
             if widgets::pill_sized(&mut child, Kind::Ghost, None, "Open folder", theme::H_SM).clicked() {
                 app.open(&world.path);
             }
+            if widgets::pill_sized(&mut child, Kind::Ghost, None, "Data packs", theme::H_SM).clicked() {
+                action = Some(WorldAction::DataPacks(world.clone()));
+            }
         }
     });
+    match action {
+        Some(WorldAction::DataPacks(world)) => ed.open_data_packs(world),
+        Some(WorldAction::Rename(world)) => {
+            let name = world.name.clone();
+            ed.renaming = Some((world, name));
+        }
+        Some(WorldAction::Delete(world)) => app.confirm = Some(Confirm::DeleteWorld(Box::new(world))),
+        Some(WorldAction::Copy(world)) => {
+            app.task(format!("Copying {}", world.name), move |_, bus| async move {
+                tokio::task::spawn_blocking(move || world::duplicate(&world)).await??;
+                bus.send(Event::ContentChanged);
+                Ok(())
+            });
+        }
+        None => {}
+    }
+}
+
+fn rename_row(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
+    let Some((target, name)) = &mut ed.renaming else { return };
+    let (mut save, mut cancel) = (false, false);
+    ui.horizontal(|ui| {
+        ui.add(widgets::input(name, "World name").desired_width(260.0));
+        save = ui.add_enabled_ui(!name.trim().is_empty(), |ui| widgets::pill(ui, Kind::Secondary, None, "Rename")).inner.clicked();
+        cancel = widgets::pill(ui, Kind::Ghost, None, "Cancel").clicked();
+    });
+    ui.add_space(theme::S2);
+    if save {
+        if let Err(e) = world::set_level_name(&target.path, name.trim()) {
+            app.errors.push(format!("Could not rename {}: {e:#}", target.name));
+        }
+        ed.invalidate();
+    }
+    if save || cancel {
+        ed.renaming = None;
+    }
+}
+
+fn data_packs(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, world: &World) {
+    if !ed.browse
+        && let Some(request) = ed.start_read()
+    {
+        let (id, path, bus) = (ed.inst.id.clone(), world.path.clone(), app.bus.clone());
+        app.rt.spawn_blocking(move || {
+            let files = modrinth::list_data_packs(&path);
+            bus.send(Event::Files { inst: id, request, files });
+        });
+    }
+    let mut back = false;
+    ui.horizontal(|ui| {
+        back = widgets::pill(ui, Kind::Ghost, None, "Back to worlds").clicked();
+        let installed = ed.files.as_ref().map_or("Installed".to_string(), |f| format!("Installed ({})", f.len()));
+        let mut browse = ed.browse;
+        widgets::segmented(ui, &mut browse, &[(false, installed.as_str()), (true, "Browse Modrinth")]);
+        ed.browse = browse;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if !ed.browse
+                && widgets::pill(ui, Kind::Ghost, None, "Add files").clicked()
+                && let Some(files) = rfd::FileDialog::new().add_filter("Data packs", ContentKind::DataPack.extensions()).pick_files()
+            {
+                add_files(app, ed, ContentKind::DataPack, files);
+            }
+        });
+    });
+    ui.add_space(theme::S3);
+    let dropped: Vec<PathBuf> = ui.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
+    if !dropped.is_empty() {
+        add_files(app, ed, ContentKind::DataPack, dropped);
+    }
+    if ed.browse {
+        browse(app, ui, ed, ContentKind::DataPack);
+    } else {
+        installed(app, ui, ed, ContentKind::DataPack);
+    }
+    if back {
+        ed.close_data_packs();
+    }
 }

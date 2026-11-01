@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::config::GameWindow;
+use crate::minecraft::world;
 use crate::paths;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -233,7 +234,8 @@ fn list_worlds(saves: &Path) -> Vec<World> {
     let Ok(entries) = std::fs::read_dir(saves) else { return Vec::new() };
     let worlds = entries.flatten().filter(|e| e.path().is_dir()).filter_map(|e| {
         let modified = e.metadata().and_then(|m| m.modified()).ok();
-        Some(World { name: e.file_name().into_string().ok()?, path: e.path(), modified })
+        let folder = e.file_name().into_string().ok()?;
+        Some(World { name: world::level_name(&e.path()).unwrap_or(folder), path: e.path(), modified })
     });
     newest_first(worlds.collect())
 }
