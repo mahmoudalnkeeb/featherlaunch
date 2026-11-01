@@ -75,6 +75,7 @@ pub struct Editor {
     memory_override: bool,
     jvm_override: bool,
     window_override: bool,
+    hooks_override: bool,
     /// A text field or popup was active last frame, so it handles Esc. This reads last frame's
     /// state because egui clears focus on Esc before the frame starts.
     esc_taken: bool,
@@ -86,6 +87,7 @@ impl Editor {
             memory_override: inst.memory_mb.is_some(),
             jvm_override: inst.jvm_args.is_some(),
             window_override: inst.window.is_some(),
+            hooks_override: inst.hooks.is_some(),
             draft: inst.clone(),
             inst,
             tab,
@@ -448,6 +450,24 @@ fn settings(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
                 d.window = None;
             }
 
+            widgets::form_section(ui, "Advanced", false);
+            widgets::form_row(ui, "Commands", |ui| {
+                ui.horizontal(|ui| {
+                    ui.set_min_height(theme::H_MD);
+                    widgets::toggle(ui, &mut ed.hooks_override);
+                    if !ed.hooks_override {
+                        ui.label(RichText::new("Default").color(theme::TEXT_MUTED));
+                    }
+                });
+            });
+            if ed.hooks_override {
+                let mut hooks = d.hooks.clone().unwrap_or_else(|| app.cfg.hooks.clone());
+                super::settings::hook_rows(ui, &mut hooks);
+                d.hooks = Some(hooks);
+            } else {
+                d.hooks = None;
+            }
+
             widgets::form_section(ui, "Java", false);
             widgets::form_row(ui, "Memory", |ui| {
                 let mut mb = d.memory_mb.unwrap_or(app.cfg.memory_mb);
@@ -596,6 +616,7 @@ fn save_bar(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
             ed.memory_override = ed.inst.memory_mb.is_some();
             ed.jvm_override = ed.inst.jvm_args.is_some();
             ed.window_override = ed.inst.window.is_some();
+            ed.hooks_override = ed.inst.hooks.is_some();
         }
     });
 }
