@@ -2,6 +2,7 @@
 //! Mod hosting platforms and their pack formats.
 
 pub mod export;
+pub mod import;
 pub mod jar_meta;
 pub mod modrinth;
 pub mod mrpack;

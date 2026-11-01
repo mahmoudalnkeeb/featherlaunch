@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! The "new instance" page: a custom version and loader, a Modrinth modpack, or a local .mrpack.
+//! The "new instance" page: a custom version and loader, a Modrinth modpack, or an imported file.
 
 use std::path::PathBuf;
 
@@ -7,7 +7,7 @@ use eframe::egui::{self, CornerRadius, Layout, Pos2, Rect, RichText, Sense, UiBu
 
 use crate::minecraft::instance::{Instance, Loader};
 use crate::modplatform::modrinth::{ContentKind, Version};
-use crate::modplatform::mrpack;
+use crate::modplatform::{import, mrpack};
 use crate::ui::project::{self, Browser, Request};
 use crate::ui::widgets::{self, Kind};
 use crate::ui::{App, Event, Page, theme};
@@ -70,7 +70,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
     let mut st = std::mem::take(&mut app.new_instance);
     let subtitle = match st.mode {
         Mode::Modpack => "Install a modpack from Modrinth as a new instance.",
-        Mode::Import => "Make an instance from a .mrpack file.",
+        Mode::Import => "Make an instance from a modpack file or another launcher.",
         Mode::Custom => "Pick a Minecraft version and an optional mod loader.",
     };
     // No page scroll: both columns fit, and the lists inside them scroll.
@@ -79,7 +79,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             widgets::page_header(ui, "New instance", subtitle, |_| {});
             ui.add_space(theme::S4);
             let mut mode = st.mode;
-            let modes = [(Mode::Custom, "Custom version"), (Mode::Modpack, "Modrinth modpacks"), (Mode::Import, "Import file")];
+            let modes = [(Mode::Custom, "Custom version"), (Mode::Modpack, "Modrinth modpacks"), (Mode::Import, "Import")];
             widgets::segmented(ui, &mut mode, &modes);
             st.mode = mode;
             ui.add_space(theme::S4);
@@ -340,16 +340,30 @@ fn modpacks(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
 fn import(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
     let mut close = false;
     widgets::form(ui, |ui| {
-        ui.label(RichText::new("A .mrpack file exported from Modrinth, Prism or another launcher.").color(theme::TEXT_MUTED));
+        ui.label(RichText::new("A .mrpack, or an instance zip from FeatherLaunch, Prism or MultiMC.").color(theme::TEXT_MUTED));
         ui.add_space(theme::S3);
         widgets::form_row(ui, "Group", |ui| {
             ui.add(widgets::input(&mut st.group, "Optional").desired_width(ui.available_width()));
         });
         ui.add_space(theme::S2);
-        if widgets::pill(ui, Kind::Primary, None, "Choose .mrpack file…").clicked()
-            && let Some(path) = rfd::FileDialog::new().add_filter("Modrinth modpack", &["mrpack"]).pick_file()
+        if widgets::pill(ui, Kind::Primary, None, "Choose file…").clicked()
+            && let Some(path) = rfd::FileDialog::new().add_filter("Modpack or instance", &["mrpack", "zip"]).pick_file()
         {
             app.read_pack(path, st.group.trim().to_string(), None);
+            close = true;
+        }
+        ui.add_space(theme::S4);
+        ui.label(RichText::new("Or copy every instance from a Prism Launcher or MultiMC folder.").color(theme::TEXT_MUTED));
+        ui.add_space(theme::S2);
+        if widgets::pill(ui, Kind::Secondary, None, "Choose folder…").clicked()
+            && let Some(dir) = rfd::FileDialog::new().pick_folder()
+        {
+            app.task("Importing instances", move |_, bus| async move {
+                let count = tokio::task::spawn_blocking(move || import::import_folder(&dir)).await??;
+                bus.send(Event::InstancesChanged(None));
+                bus.send(Event::Info(format!("Imported {count} instance{}", if count == 1 { "" } else { "s" })));
+                Ok(())
+            });
             close = true;
         }
     });
@@ -363,7 +377,7 @@ impl App {
         let bus = self.bus.clone();
         self.spawn(async move {
             let pack = path.clone();
-            let files = tokio::task::spawn_blocking(move || mrpack::unchecked_files(&pack)).await??;
+            let files = tokio::task::spawn_blocking(move || import::unchecked_files(&pack)).await??;
             bus.send(Event::PackRead { path, group, update, files });
             Ok(())
         });
@@ -379,7 +393,7 @@ impl App {
                     bus.send(Event::PackUpdated(inst.id));
                 }
                 None => {
-                    let inst = mrpack::import(path, group, parallel, &progress).await?;
+                    let inst = import::import_file(path, group, parallel, &progress).await?;
                     bus.send(Event::InstancesChanged(Some(inst.id)));
                 }
             }

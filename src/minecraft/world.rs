@@ -11,6 +11,7 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 
 use crate::minecraft::instance::World;
+use crate::modplatform::import::extract_under;
 use crate::modplatform::mrpack::safe_rel_path;
 use crate::paths;
 
@@ -148,22 +149,7 @@ pub fn import_zip(saves: &Path, zip: &Path) -> Result<()> {
     let name = prefix.trim_end_matches('/').rsplit('/').next().filter(|n| safe_rel_path(n).is_some()).unwrap_or(&stem);
     std::fs::create_dir_all(saves)?;
     let target = free_folder(saves, name);
-    let extracted = (|| -> Result<()> {
-        for i in 0..archive.len() {
-            let mut file = archive.by_index(i)?;
-            let Some(rel) = file.name().strip_prefix(&prefix).and_then(safe_rel_path) else { continue };
-            let path = target.join(rel);
-            if file.is_dir() {
-                std::fs::create_dir_all(&path)?;
-                continue;
-            }
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::io::copy(&mut file, &mut std::fs::File::create(&path)?)?;
-        }
-        Ok(())
-    })();
+    let extracted = extract_under(&mut archive, &prefix, &target);
     if extracted.is_err() {
         let _ = std::fs::remove_dir_all(&target);
     }
