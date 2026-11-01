@@ -146,7 +146,7 @@ Quilt `#9A6BD0`, Forge `#5B7CB8`, NeoForge `#E08A45`.
   up with the bar. An instance hidden by the search or filters leaves the bar too.
 - **Instance page:** opens in place of the library, with a back button (or Esc), a one-row header
   with icon and name, underlined tabs (Mods, Resource packs, Shaders, Worlds, Log, Settings, Export) and
-  the Play button. "Manage" opens Mods, or Worlds for an instance with no mod loader. The editor
+  the Play button. Worlds has a segmented control for Worlds, Servers and Screenshots, so the tabs still fit the smallest window. "Manage" opens Mods, or Worlds for an instance with no mod loader. The editor
   and console are pages, not floating windows.
 - **New instance page:** a segmented control picks Custom version, Modrinth modpacks or Import. Custom has the version list on the left, filling the height, and the form on the right,
   with the latest release already picked.
