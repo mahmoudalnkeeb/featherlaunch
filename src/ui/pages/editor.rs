@@ -45,6 +45,7 @@ pub struct Editor {
     checking: bool,
     memory_override: bool,
     jvm_override: bool,
+    window_override: bool,
     /// A text field or popup was active last frame, so it handles Esc. This reads last frame's
     /// state because egui clears focus on Esc before the frame starts.
     esc_taken: bool,
@@ -55,6 +56,7 @@ impl Editor {
         Self {
             memory_override: inst.memory_mb.is_some(),
             jvm_override: inst.jvm_args.is_some(),
+            window_override: inst.window.is_some(),
             draft: inst.clone(),
             inst,
             tab,
@@ -315,6 +317,25 @@ fn settings(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
                 });
             }
 
+            widgets::form_section(ui, "Game window", false);
+            widgets::form_row(ui, "Window size", |ui| {
+                ui.horizontal(|ui| {
+                    ui.set_min_height(theme::H_MD);
+                    widgets::toggle(ui, &mut ed.window_override);
+                    if !ed.window_override {
+                        let w = app.cfg.window;
+                        ui.label(RichText::new(format!("Default ({} × {})", w.width, w.height)).color(theme::TEXT_MUTED));
+                    }
+                });
+            });
+            if ed.window_override {
+                let mut window = d.window.unwrap_or(app.cfg.window);
+                super::settings::window_rows(ui, &mut window);
+                d.window = Some(window);
+            } else {
+                d.window = None;
+            }
+
             widgets::form_section(ui, "Java", false);
             widgets::form_row(ui, "Memory", |ui| {
                 let mut mb = d.memory_mb.unwrap_or(app.cfg.memory_mb);
@@ -330,6 +351,15 @@ fn settings(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
                 }
                 d.memory_mb = ed.memory_override.then_some(mb);
             });
+            if ed.memory_override {
+                let mut min = d.min_memory_mb.unwrap_or(app.cfg.min_memory_mb);
+                widgets::form_row(ui, "Minimum memory", |ui| {
+                    widgets::slider(ui, &mut min, 256..=8192, 256.0, " MB");
+                });
+                d.min_memory_mb = Some(min);
+            } else {
+                d.min_memory_mb = None;
+            }
             widgets::form_row(ui, "Java runtime", |ui| {
                 let text = d.java_path.clone().unwrap_or_else(|| "Automatic".into());
                 widgets::combo_cut(ui, "java", text, ui.available_width(), |ui| {
@@ -383,6 +413,7 @@ fn save_bar(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
             ed.draft = ed.inst.clone();
             ed.memory_override = ed.inst.memory_mb.is_some();
             ed.jvm_override = ed.inst.jvm_args.is_some();
+            ed.window_override = ed.inst.window.is_some();
         }
     });
 }

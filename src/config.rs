@@ -15,10 +15,27 @@ pub const LOW_END_JVM_ARGS: &str = "-XX:+UnlockExperimentalVMOptions -XX:+UseG1G
 -XX:MaxGCPauseMillis=200 -XX:+DisableExplicitGC -XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 \
 -XX:G1HeapRegionSize=8M -XX:G1ReservePercent=20 -XX:InitiatingHeapOccupancyPercent=15";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GameWindow {
+    pub width: u32,
+    pub height: u32,
+    pub fullscreen: bool,
+}
+
+impl Default for GameWindow {
+    /// Minecraft's own defaults.
+    fn default() -> Self {
+        Self { width: 854, height: 480, fullscreen: false }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub memory_mb: u32,
+    pub min_memory_mb: u32,
+    pub window: GameWindow,
     pub low_memory_warning: bool,
     pub jvm_args: String,
     /// Global Java override; `None` picks or downloads the right Java automatically.
@@ -36,6 +53,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             memory_mb: crate::sysmem::read().map_or(3072, |ram| crate::sysmem::default_memory_mb(ram.total_mb)),
+            min_memory_mb: 512,
+            window: GameWindow::default(),
             low_memory_warning: true,
             jvm_args: LOW_END_JVM_ARGS.to_string(),
             java_path: None,
