@@ -86,6 +86,7 @@ pub struct Instance {
     pub jvm_args: Option<String>,
     pub last_played: u64,
     pub play_seconds: u64,
+    pub notes: String,
     pub export: ExportInfo,
     pub pack: Option<PackSource>,
     /// A server to connect to as soon as the game starts.
@@ -117,6 +118,7 @@ impl Default for Instance {
             jvm_args: None,
             last_played: 0,
             play_seconds: 0,
+            notes: String::new(),
             export: ExportInfo::default(),
             pack: None,
             join_server: None,
@@ -234,6 +236,7 @@ impl Instance {
             jvm_args,
             last_played: _,
             play_seconds: _,
+            notes,
             export: _,
             pack: _,
             join_server,
@@ -250,6 +253,7 @@ impl Instance {
         self.min_memory_mb = min_memory_mb;
         self.window = window;
         self.hooks = hooks;
+        self.notes = notes;
         self.java_path = java_path;
         self.jvm_args = jvm_args;
         self.join_server = join_server;
@@ -382,6 +386,7 @@ mod tests {
             jvm_args: Some("-Xss1M".into()),
             last_played: 1,
             play_seconds: 1,
+            notes: "Remember the iron farm".into(),
             export: ExportInfo::default(),
             pack: None,
             join_server: Some("play.example".into()),
@@ -396,6 +401,7 @@ mod tests {
         assert_eq!((saved.memory_mb, saved.java_path.as_deref(), saved.jvm_args.as_deref()), (Some(4096), Some("java"), Some("-Xss1M")));
         assert_eq!((saved.min_memory_mb, saved.window), (edited.min_memory_mb, edited.window));
         assert_eq!(saved.hooks, edited.hooks);
+        assert_eq!(saved.notes, edited.notes);
         assert_eq!((saved.join_server.as_deref(), saved.account_id.as_deref()), (Some("play.example"), Some("abc")));
         assert_eq!((saved.id.as_str(), saved.play_seconds, saved.last_played, saved.icon_stamp), ("a", 3600, 99, Some(7)));
     }

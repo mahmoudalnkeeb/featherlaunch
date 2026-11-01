@@ -2,12 +2,14 @@
 //! Instance page: mods / resource packs / shader packs (installed + Modrinth), worlds, log, settings.
 //! It replaces the library in the main area instead of floating in a window.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use eframe::egui::{self, Pos2, Rect, RichText, Sense, UiBuilder, vec2};
 
 use crate::minecraft::instance::{ExportInfo, Instance, Loader, World};
 use crate::minecraft::logs::{self, SavedLog};
+use crate::minecraft::servers::{self, Server};
 use crate::minecraft::world;
 use crate::modplatform::modrinth::{self, ContentKind, LocalFile, SearchResponse, Update};
 use crate::modplatform::{export, mrpack};
@@ -38,6 +40,14 @@ impl Tab {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum SavesView {
+    #[default]
+    Worlds,
+    Servers,
+    Screenshots,
+}
+
 struct ExportForm {
     as_pack: bool,
     info: ExportInfo,
@@ -54,6 +64,13 @@ pub struct Editor {
     worlds: Option<Vec<World>>,
     /// The world whose data packs are open on the Worlds tab.
     pack_world: Option<World>,
+    saves_view: SavesView,
+    servers: Option<Vec<Server>>,
+    server_status: HashMap<String, String>,
+    new_server: (String, String),
+    screenshots: Option<Vec<SavedLog>>,
+    /// Starts the game once the page is back in place, for Join on a server.
+    launch_now: bool,
     renaming: Option<(World, String)>,
     show_saved_logs: bool,
     saved_logs: Option<Vec<SavedLog>>,
@@ -94,6 +111,12 @@ impl Editor {
             files: None,
             worlds: None,
             pack_world: None,
+            saves_view: SavesView::default(),
+            servers: None,
+            server_status: HashMap::new(),
+            new_server: Default::default(),
+            screenshots: None,
+            launch_now: false,
             renaming: None,
             show_saved_logs: false,
             saved_logs: None,
@@ -148,6 +171,22 @@ impl Editor {
     pub fn on_worlds(&mut self, request: u64, worlds: Vec<World>) {
         if request == self.request {
             self.worlds = Some(worlds);
+        }
+    }
+
+    pub fn on_servers(&mut self, request: u64, servers: Vec<Server>) {
+        if request == self.request {
+            self.servers = Some(servers);
+        }
+    }
+
+    pub fn on_server_status(&mut self, ip: String, text: String) {
+        self.server_status.insert(ip, text);
+    }
+
+    pub fn on_screenshots(&mut self, request: u64, shots: Vec<SavedLog>) {
+        if request == self.request {
+            self.screenshots = Some(shots);
         }
     }
 
@@ -285,6 +324,9 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
     if esc {
         action = Some(PageAction::Back);
     }
+    if std::mem::take(&mut ed.launch_now) {
+        action = Some(PageAction::Launch);
+    }
     ed.esc_taken = ui.ctx().memory(|m| m.focused().is_some() || m.any_popup_open());
     let id = ed.inst.id.clone();
     app.editor = Some(ed);
@@ -372,6 +414,9 @@ fn settings(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
             });
             widgets::form_row(ui, "Group", |ui| {
                 ui.add(widgets::input(&mut d.group, "None").desired_width(ui.available_width()));
+            });
+            widgets::form_row(ui, "Notes", |ui| {
+                widgets::multiline(ui, &mut d.notes);
             });
             widgets::form_row(ui, "Folder", |ui| {
                 if widgets::pill(ui, Kind::Secondary, None, "Open instance folder").clicked() {
@@ -1049,6 +1094,16 @@ fn worlds(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
         data_packs(app, ui, ed, &world);
         return;
     }
+    let views = [(SavesView::Worlds, "Worlds"), (SavesView::Servers, "Servers"), (SavesView::Screenshots, "Screenshots")];
+    if widgets::segmented(ui, &mut ed.saves_view, &views) {
+        ed.stale = true;
+    }
+    ui.add_space(theme::S3);
+    match ed.saves_view {
+        SavesView::Servers => return servers_view(app, ui, ed),
+        SavesView::Screenshots => return screenshots_view(app, ui, ed),
+        SavesView::Worlds => {}
+    }
     if let Some(request) = ed.start_read() {
         let (inst, bus) = (ed.inst.clone(), app.bus.clone());
         app.rt.spawn_blocking(move || {
@@ -1143,6 +1198,155 @@ fn worlds(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
             });
         }
         None => {}
+    }
+}
+
+fn servers_view(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
+    let game_dir = ed.inst.game_dir();
+    if let Some(request) = ed.start_read() {
+        let (id, dir, bus) = (ed.inst.id.clone(), game_dir.clone(), app.bus.clone());
+        app.spawn(async move {
+            let servers = tokio::task::spawn_blocking(move || servers::load(&dir)).await??;
+            bus.send(Event::Servers { inst: id, request, servers });
+            Ok(())
+        });
+    }
+    let Some(list) = ed.servers.clone() else {
+        ui.add(egui::Spinner::new().color(theme::ACCENT));
+        return;
+    };
+    for server in &list {
+        if !ed.server_status.contains_key(&server.ip) {
+            ed.server_status.insert(server.ip.clone(), "Checking".to_string());
+            let (ip, bus) = (server.ip.clone(), app.bus.clone());
+            app.rt.spawn_blocking(move || {
+                let text = servers::status(&ip).unwrap_or_else(|_| "Offline".to_string());
+                bus.send(Event::ServerStatus { ip, text });
+            });
+        }
+    }
+    let mut changed = None;
+    ui.horizontal(|ui| {
+        let (name, ip) = &mut ed.new_server;
+        ui.add(widgets::input(name, "Server name").desired_width(150.0));
+        ui.add(widgets::input(ip, "Address").desired_width(190.0));
+        let ready = !ip.trim().is_empty();
+        if ui.add_enabled_ui(ready, |ui| widgets::pill(ui, Kind::Secondary, None, "Add")).inner.clicked() {
+            let label = if name.trim().is_empty() { ip.trim() } else { name.trim() };
+            let mut next = list.clone();
+            next.push(Server::new(label, ip.trim()));
+            changed = Some(next);
+            name.clear();
+            ip.clear();
+        }
+    });
+    ui.add_space(theme::S2);
+    if list.is_empty() {
+        widgets::empty_state(ui, "No servers yet", "Add one here or in the game.", |_| {});
+    }
+    let running = app.running.contains_key(&ed.inst.id);
+    let mut join = None;
+    egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = widgets::LIST_GAP;
+        for (i, server) in list.iter().enumerate() {
+            let (row, _) = widgets::list_row(ui, 52.0, Sense::hover(), false);
+            if !ui.is_rect_visible(row) {
+                continue;
+            }
+            let buttons = Rect::from_min_max(Pos2::new(row.right() - 130.0, row.top()), Pos2::new(row.right() - theme::S3, row.bottom()));
+            let x = row.left() + theme::S3;
+            let width = buttons.left() - x - theme::S2;
+            widgets::line(ui, Pos2::new(x, row.top() + 8.0), &server.name, theme::body_strong(), theme::TEXT, width);
+            let status = ed.server_status.get(&server.ip).map_or("", String::as_str);
+            let detail = format!("{}  ·  {status}", server.ip);
+            widgets::line(ui, Pos2::new(x, row.top() + 27.0), &detail, theme::label(), theme::TEXT_MUTED, width);
+            let mut child = ui.new_child(
+                UiBuilder::new().max_rect(buttons).id_salt(("server", i)).layout(egui::Layout::right_to_left(egui::Align::Center)),
+            );
+            if widgets::icon_button(&mut child, Glyph::Trash, "Remove").clicked() {
+                let mut next = list.clone();
+                next.remove(i);
+                changed = Some(next);
+            }
+            child.add_enabled_ui(!running, |ui| {
+                if widgets::pill_sized(ui, Kind::Ghost, None, "Join", theme::H_SM).clicked() {
+                    join = Some(server.ip.clone());
+                }
+            });
+        }
+    });
+    if let Some(next) = changed {
+        match servers::save(&game_dir, &next) {
+            Ok(()) => ed.servers = Some(next),
+            Err(e) => app.errors.push(format!("Could not save the server list: {e:#}")),
+        }
+    }
+    if join.is_some() {
+        app.join_once = Some((join, None));
+        ed.launch_now = true;
+    }
+}
+
+fn screenshots_view(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
+    let dir = ed.inst.game_dir().join("screenshots");
+    if let Some(request) = ed.start_read() {
+        let (id, folder, bus) = (ed.inst.id.clone(), dir.clone(), app.bus.clone());
+        app.rt.spawn_blocking(move || {
+            let shots = logs::files_in(&folder, |n| n.ends_with(".png"));
+            bus.send(Event::Screenshots { inst: id, request, shots });
+        });
+    }
+    ui.horizontal(|ui| {
+        let count = ed.screenshots.as_ref().map_or(0, Vec::len);
+        ui.label(RichText::new(format!("{count} screenshot{}", if count == 1 { "" } else { "s" })).color(theme::TEXT_MUTED));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if widgets::pill(ui, Kind::Ghost, None, "Open folder").clicked() {
+                app.open_folder(&dir);
+            }
+        });
+    });
+    ui.add_space(theme::S2);
+    let Some(shots) = &ed.screenshots else {
+        ui.add(egui::Spinner::new().color(theme::ACCENT));
+        return;
+    };
+    if shots.is_empty() {
+        widgets::empty_state(ui, "No screenshots yet", "Press F2 in the game to take one.", |_| {});
+        return;
+    }
+    let mut open = None;
+    let mut delete = None;
+    egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = widgets::LIST_GAP;
+        for (i, shot) in shots.iter().enumerate() {
+            let (row, _) = widgets::list_row(ui, 76.0, Sense::hover(), false);
+            if !ui.is_rect_visible(row) {
+                continue;
+            }
+            let thumb = Rect::from_min_size(row.min + vec2(theme::S2, 6.0), vec2(64.0, 64.0));
+            let key = format!("file:{}|0", shot.path.display());
+            widgets::icon(ui, thumb, app.icons.get_opt(Some(&key)), &shot.name, theme::TEXT_MUTED);
+            let buttons = Rect::from_min_max(Pos2::new(row.right() - 130.0, row.top()), Pos2::new(row.right() - theme::S3, row.bottom()));
+            let x = thumb.right() + theme::S3;
+            let width = buttons.left() - x - theme::S2;
+            widgets::line(ui, Pos2::new(x, row.top() + 20.0), &shot.name, theme::body_strong(), theme::TEXT, width);
+            widgets::line(ui, Pos2::new(x, row.top() + 39.0), &days_ago("Taken", shot.modified), theme::label(), theme::TEXT_MUTED, width);
+            let mut child = ui.new_child(
+                UiBuilder::new().max_rect(buttons).id_salt(("shot", i)).layout(egui::Layout::right_to_left(egui::Align::Center)),
+            );
+            if widgets::icon_button(&mut child, Glyph::Trash, "Delete").clicked() {
+                delete = Some(shot.path.clone());
+            }
+            if widgets::pill_sized(&mut child, Kind::Ghost, None, "Open", theme::H_SM).clicked() {
+                open = Some(shot.path.clone());
+            }
+        }
+    });
+    if let Some(path) = open {
+        app.open(path);
+    }
+    if let Some(path) = delete {
+        app.confirm = Some(Confirm::DeleteScreenshot(path));
     }
 }
 

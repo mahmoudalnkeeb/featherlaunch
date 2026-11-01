@@ -21,7 +21,7 @@ const MAX_DEPTH: usize = 512;
 const MAX_LEVEL_DAT: u64 = 64 * 1024 * 1024;
 
 /// The next byte offset after a named binary tag payload, or `None` if the data is cut short.
-fn skip(b: &[u8], p: usize, tag: u8, depth: usize) -> Option<usize> {
+pub fn skip(b: &[u8], p: usize, tag: u8, depth: usize) -> Option<usize> {
     if depth > MAX_DEPTH {
         return None;
     }
@@ -59,10 +59,10 @@ fn skip(b: &[u8], p: usize, tag: u8, depth: usize) -> Option<usize> {
 }
 
 /// A tag's type and name.
-type Tag<'a> = (u8, &'a [u8]);
+pub type Tag<'a> = (u8, &'a [u8]);
 
 /// Reads a tag's header at `p`: where its payload starts, and the tag. An end tag has neither.
-fn entry(b: &[u8], p: usize) -> Option<(usize, Option<Tag<'_>>)> {
+pub fn entry(b: &[u8], p: usize) -> Option<(usize, Option<Tag<'_>>)> {
     let tag = *b.get(p)?;
     if tag == 0 {
         return Some((p + 1, None));
@@ -72,7 +72,7 @@ fn entry(b: &[u8], p: usize) -> Option<(usize, Option<Tag<'_>>)> {
 }
 
 /// A compound's child by name, as its payload's offset and type.
-fn child(b: &[u8], compound: usize, name: &[u8]) -> Option<(usize, u8)> {
+pub fn child(b: &[u8], compound: usize, name: &[u8]) -> Option<(usize, u8)> {
     let mut at = compound;
     loop {
         let (payload, entry) = entry(b, at)?;
