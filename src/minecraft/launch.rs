@@ -25,6 +25,46 @@ pub struct Prepared {
     pub game_dir: PathBuf,
     /// Things the player should know about this launch.
     pub notes: Vec<String>,
+    pub hooks: Hooks,
+}
+
+/// The parts of [`LaunchHooks`] that apply once the game is starting.
+#[derive(Default)]
+pub struct Hooks {
+    pub wrapper: String,
+    pub post_exit: String,
+    pub env: Vec<(String, String)>,
+}
+
+fn parse_env(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .filter(|(name, _)| !name.trim().is_empty())
+        .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
+        .collect()
+}
+
+/// A command for the system shell, so hooks can use its syntax.
+fn shell(command: &str, dir: &Path, env: &[(String, String)]) -> tokio::process::Command {
+    #[cfg(windows)]
+    let cmd = {
+        use std::os::windows::process::CommandExt;
+        let mut cmd = std::process::Command::new("cmd");
+        // Raw, because cmd.exe doesn't follow the quoting rules Rust would apply.
+        cmd.raw_arg(format!("/C {command}")).creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        cmd
+    };
+    #[cfg(not(windows))]
+    let cmd = {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(command);
+        cmd
+    };
+    let mut cmd = tokio::process::Command::from(cmd);
+    cmd.current_dir(dir).envs(env.iter().map(|(k, v)| (k, v))).stdin(Stdio::null());
+    cmd
 }
 
 pub async fn prepare(inst: &Instance, account: &Account, offline: bool, cfg: &Config, progress: &Progress) -> Result<Prepared> {
@@ -153,7 +193,22 @@ pub async fn prepare(inst: &Instance, account: &Account, offline: bool, cfg: &Co
     let quick_play = version.arguments.as_ref().is_some_and(|a| a.quick_play());
     args.extend(join_args(inst.join_server.as_deref(), inst.join_world.as_deref(), quick_play));
 
-    Ok(Prepared { java, args, game_dir, notes })
+    let settings = inst.hooks.clone().unwrap_or_else(|| cfg.hooks.clone());
+    let mut env = parse_env(&settings.env);
+    env.extend([
+        ("INST_ID".to_string(), inst.id.clone()),
+        ("INST_NAME".to_string(), inst.name.clone()),
+        ("INST_DIR".to_string(), inst.dir().to_string_lossy().into_owned()),
+        ("INST_MC_DIR".to_string(), game_dir.to_string_lossy().into_owned()),
+        ("INST_JAVA".to_string(), java.to_string_lossy().into_owned()),
+    ]);
+    if !settings.pre_launch.trim().is_empty() {
+        progress.set_label("Running the pre-launch command");
+        let status = shell(&settings.pre_launch, &game_dir, &env).status().await.context("starting the pre-launch command")?;
+        anyhow::ensure!(status.success(), "The pre-launch command failed ({status}), so the game wasn't started");
+    }
+    let hooks = Hooks { wrapper: settings.wrapper, post_exit: settings.post_exit, env };
+    Ok(Prepared { java, args, game_dir, notes, hooks })
 }
 
 /// Older versions can only join servers, and name the port separately.
@@ -405,8 +460,17 @@ pub type LineSink = Arc<dyn Fn(LogLine) + Send + Sync>;
 pub fn spawn(prep: Prepared, on_line: LineSink, on_exit: impl FnOnce(Option<i32>) + Send + 'static) -> Result<oneshot::Sender<()>> {
     let (stdout, stdout_writer) = std::io::pipe().context("creating the game's stdout pipe")?;
     let (stderr, stderr_writer) = std::io::pipe().context("creating the game's stderr pipe")?;
-    let mut cmd = tokio::process::Command::new(&prep.java);
-    cmd.args(&prep.args).current_dir(&prep.game_dir).stdin(Stdio::null()).stdout(stdout_writer).stderr(stderr_writer);
+    let mut wrapper = prep.hooks.wrapper.split_whitespace();
+    let mut cmd = match wrapper.next() {
+        Some(program) => {
+            let mut cmd = tokio::process::Command::new(program);
+            cmd.args(wrapper).arg(&prep.java);
+            cmd
+        }
+        None => tokio::process::Command::new(&prep.java),
+    };
+    let envs = prep.hooks.env.iter().map(|(k, v)| (k, v));
+    cmd.args(&prep.args).envs(envs).current_dir(&prep.game_dir).stdin(Stdio::null()).stdout(stdout_writer).stderr(stderr_writer);
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     let mut child = cmd.spawn().with_context(|| format!("starting {}", prep.java.display()))?;
@@ -424,6 +488,7 @@ pub fn spawn(prep: Prepared, on_line: LineSink, on_exit: impl FnOnce(Option<i32>
     forward_lines(stderr, move |line| sink(LogLine { level: Level::Error, text: line }));
 
     let (kill_tx, kill_rx) = oneshot::channel::<()>();
+    let Prepared { game_dir, hooks, .. } = prep;
     tokio::spawn(async move {
         // A dropped sender (launcher closing) must not kill the game; only an explicit send does.
         let code = tokio::select! {
@@ -433,6 +498,9 @@ pub fn spawn(prep: Prepared, on_line: LineSink, on_exit: impl FnOnce(Option<i32>
                 None
             }
         };
+        if !hooks.post_exit.trim().is_empty() {
+            let _ = shell(&hooks.post_exit, &game_dir, &hooks.env).status().await;
+        }
         on_exit(code);
     });
     Ok(kill_tx)
@@ -473,6 +541,23 @@ fn shorten(text: &str, chars: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_environment_lines() {
+        let env = parse_env("A=1\n# comment\n\n B = two words \nC=x=y\nnot a pair\n=empty");
+        let pairs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        assert_eq!(pairs, [("A", "1"), ("B", "two words"), ("C", "x=y")]);
+    }
+
+    #[tokio::test]
+    async fn hooks_report_failure_and_see_their_environment() {
+        let dir = std::env::temp_dir();
+        assert!(shell("exit 0", &dir, &[]).status().await.unwrap().success());
+        assert!(!shell("exit 3", &dir, &[]).status().await.unwrap().success());
+        let echo = if cfg!(windows) { "echo %FL_TEST%" } else { "echo $FL_TEST" };
+        let output = shell(echo, &dir, &[("FL_TEST".to_string(), "hello".to_string())]).output().await.unwrap();
+        assert!(String::from_utf8_lossy(&output.stdout).contains("hello"));
+    }
 
     #[test]
     fn joins_servers_in_each_version_format() {
@@ -543,7 +628,7 @@ mod tests {
         let (java, args) = ("ping", ["-n", "11", "127.0.0.1"].map(String::from).to_vec());
         #[cfg(not(windows))]
         let (java, args) = ("sleep", vec!["10".to_string()]);
-        let prep = Prepared { java: java.into(), args, game_dir: std::env::temp_dir(), notes: Vec::new() };
+        let prep = Prepared { java: java.into(), args, game_dir: std::env::temp_dir(), notes: Vec::new(), hooks: Hooks::default() };
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let _kill = runtime.block_on(async { spawn(prep, Arc::new(|_| {}), |_| {}) }).unwrap();
@@ -562,7 +647,7 @@ mod tests {
         let (java, args) = ("cmd", ["/c", "echo", "out&", "echo", "err", "1>&2"].map(String::from).to_vec());
         #[cfg(not(windows))]
         let (java, args) = ("sh", ["-c", "echo out; echo err >&2"].map(String::from).to_vec());
-        let prep = Prepared { java: java.into(), args, game_dir: std::env::temp_dir(), notes: Vec::new() };
+        let prep = Prepared { java: java.into(), args, game_dir: std::env::temp_dir(), notes: Vec::new(), hooks: Hooks::default() };
 
         let (line_tx, lines) = std::sync::mpsc::channel();
         let sink: LineSink = Arc::new(move |line| {

@@ -30,12 +30,25 @@ impl Default for GameWindow {
     }
 }
 
+/// Commands around the game. Empty means none.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LaunchHooks {
+    /// Starts the game through another program, like `mangohud`.
+    pub wrapper: String,
+    pub pre_launch: String,
+    pub post_exit: String,
+    /// `NAME=value` lines.
+    pub env: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub memory_mb: u32,
     pub min_memory_mb: u32,
     pub window: GameWindow,
+    pub hooks: LaunchHooks,
     pub low_memory_warning: bool,
     pub jvm_args: String,
     /// Global Java override; `None` picks or downloads the right Java automatically.
@@ -57,6 +70,7 @@ impl Default for Config {
             memory_mb: crate::sysmem::read().map_or(3072, |ram| crate::sysmem::default_memory_mb(ram.total_mb)),
             min_memory_mb: 512,
             window: GameWindow::default(),
+            hooks: LaunchHooks::default(),
             low_memory_warning: true,
             jvm_args: LOW_END_JVM_ARGS.to_string(),
             java_path: None,

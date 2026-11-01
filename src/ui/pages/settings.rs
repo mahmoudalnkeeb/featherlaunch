@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, RichText};
 
-use crate::config::{Config, GameWindow, LOW_END_JVM_ARGS, OnLaunch};
+use crate::config::{Config, GameWindow, LOW_END_JVM_ARGS, LaunchHooks, OnLaunch};
 use crate::paths;
 use crate::ui::glyph::Glyph;
 use crate::ui::widgets::{self, Kind};
@@ -85,6 +85,9 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                 }
             });
 
+            widgets::form_section(ui, "Advanced", false);
+            hook_rows(ui, &mut draft.hooks);
+
             widgets::form_section(ui, "Downloads", false);
             widgets::form_row(ui, "Parallel downloads", |ui| {
                 widgets::slider(ui, &mut draft.parallel_downloads, 1..=16, 1.0, "");
@@ -160,6 +163,22 @@ pub fn window_rows(ui: &mut egui::Ui, window: &mut GameWindow) {
             ui.set_min_height(theme::H_MD);
             widgets::toggle_labeled(ui, &mut window.fullscreen, "Start the game in fullscreen");
         });
+    });
+}
+
+/// Commands around the game, shared with the instance page.
+pub fn hook_rows(ui: &mut egui::Ui, hooks: &mut LaunchHooks) {
+    let row = |ui: &mut egui::Ui, label: &str, hint: &str, text: &mut String| {
+        widgets::form_row(ui, label, |ui| {
+            ui.add(widgets::input(text, hint).desired_width(ui.available_width()));
+        });
+    };
+    row(ui, "Wrapper command", "None", &mut hooks.wrapper);
+    row(ui, "Before launching", "None", &mut hooks.pre_launch);
+    row(ui, "After exiting", "None", &mut hooks.post_exit);
+    widgets::form_row(ui, "Environment", |ui| {
+        widgets::multiline(ui, &mut hooks.env);
+        widgets::hint(ui, "One NAME=value per line.");
     });
 }
 
