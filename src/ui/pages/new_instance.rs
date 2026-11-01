@@ -2,11 +2,14 @@
 //! The "new instance" page: a custom version and loader, a Modrinth modpack, or an imported file.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use eframe::egui::{self, CornerRadius, Layout, Pos2, Rect, RichText, Sense, UiBuilder, vec2};
+use tokio::sync::oneshot;
 
 use crate::minecraft::instance::{Instance, Loader};
 use crate::modplatform::modrinth::{ContentKind, Version};
+use crate::modplatform::mrpack::PackOptions;
 use crate::modplatform::{import, mrpack};
 use crate::ui::project::{self, Browser, Request};
 use crate::ui::widgets::{self, Kind};
@@ -328,9 +331,9 @@ fn modpacks(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
     }
     let (Some(version), Some(pack)) = (install, st.browser.hit.clone()) else { return false };
     let group = st.group.trim().to_string();
-    let parallel = app.cfg.parallel_downloads;
+    let options = app.pack_options();
     app.cancellable_task(format!("Installing {}", pack.title), move |progress, bus| async move {
-        let inst = mrpack::install_from_modrinth(&version, &pack.title, pack.icon_url.as_deref(), group, parallel, &progress).await?;
+        let inst = mrpack::install_from_modrinth(&version, &pack.title, pack.icon_url.as_deref(), group, &options, &progress).await?;
         bus.send(Event::InstancesChanged(Some(inst.id)));
         Ok(())
     });
@@ -383,17 +386,29 @@ impl App {
         });
     }
 
+    pub fn pack_options(&self) -> PackOptions {
+        let bus = self.bus.clone();
+        PackOptions {
+            parallel: self.cfg.parallel_downloads,
+            ask_optional: Arc::new(move |files| {
+                let (reply, answer) = oneshot::channel();
+                bus.send(Event::PackOptional { files, reply });
+                answer
+            }),
+        }
+    }
+
     pub fn import_pack(&mut self, path: PathBuf, group: String, update: Option<String>) {
-        let parallel = self.cfg.parallel_downloads;
+        let options = self.pack_options();
         let target = update.and_then(|id| self.instance(&id).cloned());
         self.cancellable_task("Importing modpack", move |progress, bus| async move {
             match target {
                 Some(inst) => {
-                    let inst = mrpack::update(inst, path, None, parallel, &progress).await?;
+                    let inst = mrpack::update(inst, path, None, &options, &progress).await?;
                     bus.send(Event::PackUpdated(inst.id));
                 }
                 None => {
-                    let inst = import::import_file(path, group, parallel, &progress).await?;
+                    let inst = import::import_file(path, group, &options, &progress).await?;
                     bus.send(Event::InstancesChanged(Some(inst.id)));
                 }
             }

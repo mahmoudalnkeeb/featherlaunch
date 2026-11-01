@@ -80,6 +80,7 @@ pub struct App {
     accounts_ui: accounts::AccountsUi,
     settings_draft: Option<Config>,
     confirm: Option<dialogs::Confirm>,
+    optional: Vec<dialogs::OptionalFiles>,
     deleting: HashSet<String>,
     launcher_update: LauncherUpdate,
 }
@@ -120,6 +121,7 @@ impl App {
             accounts_ui: Default::default(),
             settings_draft: None,
             confirm: None,
+            optional: Vec::new(),
             deleting: HashSet::new(),
             launcher_update: Default::default(),
         };
@@ -303,6 +305,7 @@ impl eframe::App for App {
         main_view::show(self, ctx);
         accounts::device_code_window(self, ctx);
         dialogs::window(self, ctx);
+        dialogs::optional_window(self, ctx);
         self.errors_window(ctx);
         chrome::frame_edges(ctx);
         self.fetch_wanted_icons();

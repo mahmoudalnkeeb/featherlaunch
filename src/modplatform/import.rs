@@ -13,7 +13,7 @@ use zip::ZipArchive;
 use crate::log;
 use crate::minecraft::instance::{Instance, Loader, PackSource};
 use crate::modplatform::modrinth::ContentKind;
-use crate::modplatform::mrpack::{self, PartialInstance, safe_rel_path};
+use crate::modplatform::mrpack::{self, PackOptions, PartialInstance, safe_rel_path};
 use crate::paths;
 use crate::tasks::Progress;
 
@@ -192,12 +192,12 @@ fn import_own_zip(path: &Path, group: String) -> Result<Instance> {
 }
 
 /// Makes an instance from a pack or instance file.
-pub async fn import_file(path: PathBuf, group: String, parallel: usize, progress: &Progress) -> Result<Instance> {
+pub async fn import_file(path: PathBuf, group: String, options: &PackOptions, progress: &Progress) -> Result<Instance> {
     progress.set_label("Reading file");
     let file = path.clone();
     let kind = tokio::task::spawn_blocking(move || detect(&file)).await??;
     if kind == ArchiveKind::Modrinth {
-        return mrpack::import(path, group, parallel, progress).await;
+        return mrpack::import(path, group, options, progress).await;
     }
     progress.set_label("Copying files");
     // Extraction runs on a blocking thread that a cancel would not stop.
