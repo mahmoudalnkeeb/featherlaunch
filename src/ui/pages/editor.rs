@@ -18,6 +18,8 @@ use crate::ui::widgets::{self, Kind};
 use crate::ui::{App, Event, Page, console, main_view, theme};
 
 const FOOTER_HEIGHT: f32 = 56.0;
+/// Below this width a content toolbar uses shorter labels, so all of it fits.
+const NARROW_TOOLBAR: f32 = 600.0;
 /// Room for a world row's buttons, leaving the rest of the row for its name.
 const WORLD_BUTTONS: f32 = 372.0;
 
@@ -591,10 +593,12 @@ fn content(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind)
     if !ed.browse {
         read_files(app, ed, kind);
     }
+    let narrow = ui.available_width() < NARROW_TOOLBAR;
     ui.horizontal(|ui| {
         let installed = ed.files.as_ref().map_or("Installed".to_string(), |f| format!("Installed ({})", f.len()));
         let mut browse = ed.browse;
-        widgets::segmented(ui, &mut browse, &[(false, installed.as_str()), (true, "Browse Modrinth")]);
+        let browse_label = if narrow { "Browse" } else { "Browse Modrinth" };
+        widgets::segmented(ui, &mut browse, &[(false, installed.as_str()), (true, browse_label)]);
         ed.browse = browse;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if widgets::pill(ui, Kind::Ghost, None, "Open folder").clicked() {
@@ -609,7 +613,7 @@ fn content(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind)
                 {
                     add_files(app, ed, kind, files);
                 }
-                update_buttons(app, ui, ed, kind);
+                update_buttons(app, ui, ed, kind, narrow);
             }
         });
     });
@@ -635,7 +639,7 @@ fn export_tab(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
         touched: false,
     });
     let mut start = false;
-    egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+    egui::ScrollArea::vertical().id_salt("export").auto_shrink([false; 2]).show(ui, |ui| {
         widgets::form(ui, |ui| {
             widgets::form_section(ui, "Format", true);
             widgets::form_row(ui, "Export as", |ui| {
@@ -813,7 +817,7 @@ fn read_files(app: &mut App, ed: &mut Editor, kind: ContentKind) {
     }
 }
 
-fn update_buttons(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind) {
+fn update_buttons(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind, narrow: bool) {
     if !ed.updates.is_empty() {
         if widgets::pill(ui, Kind::Primary, None, &format!("Update all ({})", ed.updates.len())).clicked() {
             let (inst, updates) = (ed.inst.clone(), std::mem::take(&mut ed.updates));
@@ -828,7 +832,8 @@ fn update_buttons(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: Conte
         return;
     }
     let has_files = ed.files.as_ref().is_some_and(|f| !f.is_empty());
-    let check = ui.add_enabled_ui(!ed.checking && has_files, |ui| widgets::pill(ui, Kind::Secondary, None, "Check for updates"));
+    let label = if narrow { "Updates" } else { "Check for updates" };
+    let check = ui.add_enabled_ui(!ed.checking && has_files, |ui| widgets::pill(ui, Kind::Secondary, None, label));
     if check.inner.clicked() {
         ed.checking = true;
         let (inst, bus) = (ed.inst.clone(), app.bus.clone());
