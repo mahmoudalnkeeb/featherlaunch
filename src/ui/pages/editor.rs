@@ -410,6 +410,25 @@ fn settings(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
                 });
             }
 
+            widgets::form_row(ui, "Join server", |ui| {
+                let mut server = d.join_server.clone().unwrap_or_default();
+                ui.add(widgets::input(&mut server, "None").desired_width(ui.available_width()));
+                d.join_server = Some(server.trim().to_string()).filter(|s| !s.is_empty());
+            });
+            widgets::form_row(ui, "Account", |ui| {
+                let accounts = &app.accounts.accounts;
+                let name = |id: &Option<String>| {
+                    let found = id.as_ref().and_then(|id| accounts.iter().find(|a| a.id == *id));
+                    found.map_or("Selected account".to_string(), |a| a.name.clone())
+                };
+                widgets::combo("instance-account", name(&d.account_id), 200.0).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut d.account_id, None, "Selected account");
+                    for a in accounts {
+                        ui.selectable_value(&mut d.account_id, Some(a.id.clone()), &a.name);
+                    }
+                });
+            });
+
             widgets::form_section(ui, "Game window", false);
             widgets::form_row(ui, "Window size", |ui| {
                 ui.horizontal(|ui| {

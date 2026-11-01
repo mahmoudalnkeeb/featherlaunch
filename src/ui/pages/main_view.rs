@@ -52,6 +52,7 @@ enum Action {
     Edit(String, editor::Tab),
     Folder(String),
     Copy(String),
+    Shortcut(String),
     Delete(String),
     ClearFilters,
 }
@@ -294,6 +295,9 @@ fn instance_menu(ui: &mut egui::Ui, inst: &Instance, running: bool, can_play_off
     if widgets::menu_item(ui, "Duplicate").clicked() {
         actions.push(Action::Copy(id.clone()));
     }
+    if widgets::menu_item(ui, "Create shortcut").clicked() {
+        actions.push(Action::Shortcut(id.clone()));
+    }
     if widgets::menu_item(ui, "Export").clicked() {
         actions.push(Action::Edit(id.clone(), editor::Tab::Export));
     }
@@ -411,6 +415,16 @@ fn apply(app: &mut App, action: Action) {
                 app.task(format!("Copying {}", inst.name), move |_, bus| async move {
                     let copy = tokio::task::spawn_blocking(move || inst.duplicate()).await??;
                     bus.send(crate::ui::Event::InstancesChanged(Some(copy.id)));
+                    Ok(())
+                });
+            }
+        }
+        Action::Shortcut(id) => {
+            if let Some(inst) = app.instance(&id).cloned() {
+                let bus = app.bus.clone();
+                app.spawn(async move {
+                    tokio::task::spawn_blocking(move || crate::shortcut::create(&inst)).await??;
+                    bus.send(crate::ui::Event::Info("Shortcut added to the desktop".to_string()));
                     Ok(())
                 });
             }

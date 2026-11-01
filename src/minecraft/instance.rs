@@ -87,6 +87,13 @@ pub struct Instance {
     pub play_seconds: u64,
     pub export: ExportInfo,
     pub pack: Option<PackSource>,
+    /// A server to connect to as soon as the game starts.
+    pub join_server: Option<String>,
+    /// A world to open as soon as the game starts, for this launch only.
+    #[serde(skip)]
+    pub join_world: Option<String>,
+    /// The account to play with, when not the selected one.
+    pub account_id: Option<String>,
     /// Modification time of `icon.png`, so a changed icon gets a new cache key.
     #[serde(skip)]
     pub icon_stamp: Option<u128>,
@@ -110,6 +117,9 @@ impl Default for Instance {
             play_seconds: 0,
             export: ExportInfo::default(),
             pack: None,
+            join_server: None,
+            join_world: None,
+            account_id: None,
             icon_stamp: None,
         }
     }
@@ -223,6 +233,9 @@ impl Instance {
             play_seconds: _,
             export: _,
             pack: _,
+            join_server,
+            join_world: _,
+            account_id,
             icon_stamp: _,
         } = edited.clone();
         self.name = name;
@@ -235,6 +248,8 @@ impl Instance {
         self.window = window;
         self.java_path = java_path;
         self.jvm_args = jvm_args;
+        self.join_server = join_server;
+        self.account_id = account_id;
     }
 
     pub fn summary(&self) -> String {
@@ -364,6 +379,9 @@ mod tests {
             play_seconds: 1,
             export: ExportInfo::default(),
             pack: None,
+            join_server: Some("play.example".into()),
+            join_world: None,
+            account_id: Some("abc".into()),
             icon_stamp: None,
         };
         saved.apply_settings(&edited);
@@ -372,6 +390,7 @@ mod tests {
         assert_eq!(saved.loader_version.as_deref(), Some("0.16"));
         assert_eq!((saved.memory_mb, saved.java_path.as_deref(), saved.jvm_args.as_deref()), (Some(4096), Some("java"), Some("-Xss1M")));
         assert_eq!((saved.min_memory_mb, saved.window), (edited.min_memory_mb, edited.window));
+        assert_eq!((saved.join_server.as_deref(), saved.account_id.as_deref()), (Some("play.example"), Some("abc")));
         assert_eq!((saved.id.as_str(), saved.play_seconds, saved.last_played, saved.icon_stamp), ("a", 3600, 99, Some(7)));
     }
 }

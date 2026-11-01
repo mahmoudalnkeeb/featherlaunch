@@ -76,6 +76,18 @@ pub struct Arguments {
     pub jvm: Vec<ArgValue>,
 }
 
+impl Arguments {
+    /// Newer versions join servers and worlds with `--quickPlay` options.
+    pub fn quick_play(&self) -> bool {
+        self.game.iter().any(|arg| match arg {
+            ArgValue::Ruled { rules, .. } => {
+                rules.iter().any(|r| r.features.as_ref().is_some_and(|f| f.contains_key("is_quick_play_multiplayer")))
+            }
+            ArgValue::Plain(_) => false,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ArgValue {
