@@ -47,6 +47,8 @@ pub struct Config {
     pub open_console_on_launch: bool,
     pub sidebar_collapsed: bool,
     pub check_updates: bool,
+    /// `None` keeps instances in the data folder.
+    pub instances_dir: Option<String>,
 }
 
 impl Default for Config {
@@ -64,6 +66,7 @@ impl Default for Config {
             open_console_on_launch: false,
             sidebar_collapsed: false,
             check_updates: true,
+            instances_dir: None,
         }
     }
 }

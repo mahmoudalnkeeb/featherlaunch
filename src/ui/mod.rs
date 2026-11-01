@@ -89,11 +89,13 @@ impl App {
     pub fn new(cc: &eframe::CreationContext, rt: tokio::runtime::Handle) -> Self {
         theme::apply(&cc.egui_ctx);
         let (tx, rx) = mpsc::channel();
+        let cfg = Config::load();
+        crate::paths::set_instances(cfg.instances_dir.as_ref().map(std::path::PathBuf::from));
         let mut app = Self {
             rt,
             bus: Bus { tx, ctx: cc.egui_ctx.clone() },
             rx,
-            cfg: Config::load(),
+            cfg,
             accounts: AccountStore::load(),
             instances: instance::list(),
             selected: None,
@@ -238,6 +240,21 @@ impl App {
             let deleted = tokio::task::spawn_blocking(move || inst.delete()).await;
             bus.send(Event::InstanceDeleted(id));
             deleted?.with_context(|| format!("Could not delete {name}"))
+        });
+    }
+
+    /// Moves every instance to `to`. Nothing may be using them meanwhile, so this needs an idle launcher.
+    fn move_instances(&mut self, to: std::path::PathBuf) {
+        if !self.running.is_empty() || self.tasks.iter().any(|t| !t.snapshot().finished()) {
+            self.warn("Wait for running games and tasks to finish first.");
+            return;
+        }
+        let from = crate::paths::instances();
+        self.task("Moving instances", move |_, bus| async move {
+            let target = to.clone();
+            tokio::task::spawn_blocking(move || crate::paths::move_dir(&from, &target)).await??;
+            bus.send(Event::InstancesMoved(to));
+            Ok(())
         });
     }
 

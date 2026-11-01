@@ -107,6 +107,17 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                 });
             });
 
+            widgets::form_row(ui, "Instances folder", |ui| {
+                let path = paths::instances().to_string_lossy().into_owned();
+                widgets::line_tip(ui, &path, theme::label(), theme::TEXT, theme::H_MD);
+                if widgets::pill_sized(ui, Kind::Secondary, None, "Moveâ€¦", theme::H_SM).clicked()
+                    && let Some(dir) = rfd::FileDialog::new().pick_folder()
+                {
+                    app.move_instances(dir);
+                }
+                widgets::hint(ui, "Pick an empty folder, for example on a bigger drive.");
+            });
+
             widgets::form_section(ui, "Updates", false);
             widgets::form_row(ui, "Version", |ui| {
                 ui.horizontal(|ui| {
