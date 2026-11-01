@@ -460,6 +460,12 @@ pub async fn check_updates(inst: &Instance, kind: ContentKind) -> Result<Vec<Upd
         .collect())
 }
 
+/// The versions Modrinth has for these SHA-1 hashes. Unknown hashes are left out.
+pub async fn versions_by_hash(hashes: &[&String]) -> Result<HashMap<String, Version>> {
+    let body = json!({ "hashes": hashes, "algorithm": "sha1" });
+    Ok(net::client().post(format!("{API}/version_files")).json(&body).send().await?.error_for_status()?.json().await?)
+}
+
 /// Fills in names and icons for files missing them: older installs, and files added by hand
 /// (found on Modrinth by their SHA-1). Returns true if the index changed.
 pub async fn identify(inst: &Instance, kind: ContentKind) -> Result<bool> {
@@ -473,14 +479,7 @@ pub async fn identify(inst: &Instance, kind: ContentKind) -> Result<bool> {
     // Hash → version for files we have never seen.
     let mut found: Vec<(String, Version)> = Vec::new();
     if !hashed.is_empty() {
-        let by_hash: HashMap<String, Version> = net::client()
-            .post(format!("{API}/version_files"))
-            .json(&json!({ "hashes": hashed.iter().map(|(h, _)| h).collect::<Vec<_>>(), "algorithm": "sha1" }))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let by_hash = versions_by_hash(&hashed.iter().map(|(h, _)| h).collect::<Vec<_>>()).await?;
         for (hash, file) in &hashed {
             if let Some(v) = by_hash.get(hash) {
                 found.push((ContentIndex::key(kind.folder(), &file.file_name), v.clone()));

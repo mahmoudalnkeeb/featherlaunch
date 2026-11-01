@@ -294,6 +294,9 @@ fn instance_menu(ui: &mut egui::Ui, inst: &Instance, running: bool, can_play_off
     if widgets::menu_item(ui, "Duplicate").clicked() {
         actions.push(Action::Copy(id.clone()));
     }
+    if widgets::menu_item(ui, "Export").clicked() {
+        actions.push(Action::Edit(id.clone(), editor::Tab::Export));
+    }
     ui.separator();
     if widgets::menu_danger(ui, "Delete").clicked() {
         actions.push(Action::Delete(id.clone()));
