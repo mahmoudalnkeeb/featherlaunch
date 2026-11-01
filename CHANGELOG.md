@@ -3,6 +3,44 @@
 The notes for each version are published with its release, so write them for people using the
 launcher. Add a section here before tagging; the release job stops without one.
 
+## 1.2.0 - 2026-11-02
+
+### Added
+
+- Join a server when the game starts, from an instance's Settings or the new Servers list.
+- Servers and Screenshots are in the Worlds tab. The server list shows who's online, and you can
+  add, remove and join servers from it. A server that relies on an SRV record shows as offline, but
+  you can still join it.
+- Notes on each instance, in its Settings.
+- Modpacks with optional files now ask which ones you want.
+- Move your instances to another folder or drive from Settings.
+- Create a desktop shortcut that starts an instance, from its More menu.
+- Start the launcher from the command line with `--launch`, `--server`, `--world`, `--profile`,
+  `--offline` and `--dir`.
+- Pick which account an instance plays with.
+- Run a wrapper command, commands before launching and after exiting, and set environment
+  variables, for all instances or just one.
+- On Linux: GameMode, MangoHud, the discrete GPU, and the system's GLFW and OpenAL.
+- Sort Modrinth search and filter it by category.
+- Choose whether mod updates can be betas and alphas.
+- A proxy setting for the launcher's own downloads.
+- Pick a cape, and keep a list of saved skins, on the Accounts page.
+- Show what you're playing on your Discord profile. This is off until you turn it on in Settings.
+
+### Changed
+
+- Instance zips never bring launch commands, a join server or a chosen account with them, because
+  those can run commands or belong to the PC they came from.
+
+### Known issues
+
+- If you close the launcher while a game is running, that session's play time isn't saved. Its log
+  is still under Saved logs.
+- CurseForge packs can't be imported yet.
+- Turning off a data pack that is a folder, not a zip, has no effect in game.
+- A desktop shortcut opens a new copy of the launcher, even if one is already running.
+- On a brand new instance, joining a server waits until you dismiss Minecraft's first-run screen.
+
 ## 1.1.0 - 2026-11-01
 
 ### Added
