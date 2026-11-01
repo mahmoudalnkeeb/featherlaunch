@@ -122,6 +122,27 @@ pub fn detect() -> Vec<JavaInstall> {
     found
 }
 
+/// Whether a runtime can run a version that asks for `required`: see [`pick`].
+pub fn fits(major: u32, required: u32) -> bool {
+    major == required || (required >= 16 && major > required)
+}
+
+/// The major version of a runtime picked by hand. One without a `release` file is started to ask,
+/// and a path that doesn't start is an error.
+pub fn major_of(java_exe: &Path) -> Result<u32> {
+    if let Some(found) = std::fs::canonicalize(java_exe).ok().and_then(|p| probe(&p)) {
+        return Ok(found.major);
+    }
+    let mut cmd = std::process::Command::new(java_exe);
+    cmd.arg("-version");
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000); // CREATE_NO_WINDOW
+    let output = cmd.output().with_context(|| format!("The Java runtime {} could not be started", java_exe.display()))?;
+    // Prints to stderr: `openjdk version "21.0.5" 2024-10-15`.
+    let text = String::from_utf8_lossy(&output.stderr);
+    text.split('"').nth(1).and_then(parse_major).with_context(|| format!("{} did not report a Java version", java_exe.display()))
+}
+
 /// Exact major version first; for Java 16+ requirements a newer runtime also works.
 pub fn pick(installs: &[JavaInstall], required: u32) -> Option<&JavaInstall> {
     installs
@@ -243,6 +264,16 @@ mod tests {
         assert_eq!(parse_major("21.0.5"), Some(21));
         assert_eq!(parse_major("17"), Some(17));
         assert_eq!(parse_major(""), None);
+    }
+
+    #[test]
+    fn checks_a_chosen_runtime() {
+        assert!(fits(8, 8));
+        assert!(fits(21, 17));
+        assert!(!fits(8, 21));
+        assert!(!fits(17, 21));
+        assert!(!fits(21, 8), "old versions need exactly Java 8");
+        assert!(major_of(Path::new("no-such-java")).is_err());
     }
 
     #[test]

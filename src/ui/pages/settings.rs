@@ -62,6 +62,12 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                     }
                 });
             });
+            widgets::form_row(ui, "Compatibility", |ui| {
+                ui.horizontal(|ui| {
+                    ui.set_min_height(theme::H_MD);
+                    widgets::toggle_labeled(ui, &mut draft.ignore_java_check, "Use my Java even if it doesn't suit the game version");
+                });
+            });
             widgets::form_row(ui, "JVM arguments", |ui| {
                 widgets::multiline(ui, &mut draft.jvm_args);
                 if widgets::pill_sized(ui, Kind::Secondary, None, "Reset to low-end defaults", theme::H_SM).clicked() {

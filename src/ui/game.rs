@@ -73,6 +73,10 @@ impl App {
                 a
             };
             let prepared = launch::prepare(&inst, &account, offline, &cfg, &progress).await?;
+            for note in &prepared.notes {
+                bus.send(Event::Warning(note.clone()));
+                bus.send(Event::Log { inst: inst.id.clone(), line: LogLine { level: Level::Warn, text: note.clone() } });
+            }
             let (log_bus, log_id) = (bus.clone(), inst.id.clone());
             let sink: LineSink = Arc::new(move |line| log_bus.send_batched(Event::Log { inst: log_id.clone(), line }));
             let (exit_bus, exit_id) = (bus.clone(), inst.id.clone());
