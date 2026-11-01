@@ -260,6 +260,15 @@ fn stale_files(old: &[String], new: &[String]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Instances are named after their pack's version, so that name would go stale. A name the player
+/// chose stays.
+fn renamed(name: &str, old_version: &str, new_version: &str) -> String {
+    match name.strip_suffix(old_version) {
+        Some(base) if !old_version.is_empty() => format!("{base}{new_version}"),
+        _ => name.to_string(),
+    }
+}
+
 /// A file the player disabled stays disabled, rather than coming back beside its `.disabled` copy.
 fn is_disabled(path: &Path) -> bool {
     let mut disabled = path.as_os_str().to_owned();
@@ -303,6 +312,7 @@ pub async fn update(
     })
     .await??;
 
+    inst.name = renamed(&inst.name, &source.version, &index.version_id);
     let title = if source.title.is_empty() { index.name } else { source.title };
     inst.pack = Some(PackSource { title, version: index.version_id, project_id: source.project_id, version_id, files });
     inst.mc_version = mc;
@@ -393,6 +403,13 @@ mod tests {
         let files = unchecked_files(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files, ["mods/github.jar", "overrides/mods/bundled.jar", "client-overrides/mods/client.jar"]);
+    }
+
+    #[test]
+    fn updates_keep_the_version_in_the_name_current() {
+        assert_eq!(renamed("Pack 1.0", "1.0", "2.0"), "Pack 2.0");
+        assert_eq!(renamed("My survival", "1.0", "2.0"), "My survival");
+        assert_eq!(renamed("Pack", "", "2.0"), "Pack");
     }
 
     #[test]
