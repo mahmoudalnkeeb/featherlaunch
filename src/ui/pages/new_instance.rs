@@ -79,7 +79,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             widgets::page_header(ui, "New instance", subtitle, |_| {});
             ui.add_space(theme::S4);
             let mut mode = st.mode;
-            let modes = [(Mode::Custom, "Custom version"), (Mode::Modpack, "Modrinth modpacks"), (Mode::Import, "Import")];
+            let modes = [(Mode::Custom, "Custom version"), (Mode::Modpack, "Modpacks"), (Mode::Import, "Import")];
             widgets::segmented(ui, &mut mode, &modes);
             st.mode = mode;
             ui.add_space(theme::S4);
@@ -317,7 +317,7 @@ fn modpacks(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
     match request {
         Some(Request::Search(offset)) => {
             st.browser.start_search();
-            app.search_modrinth(st.browser.query.clone(), ContentKind::Modpack, None, offset);
+            app.search_content(st.browser.query.clone(), ContentKind::Modpack, None, offset, st.browser.curseforge);
         }
         Some(Request::Versions(hit)) => {
             let project = hit.project_id.clone();
@@ -330,8 +330,12 @@ fn modpacks(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
     let group = st.group.trim().to_string();
     let parallel = app.cfg.parallel_downloads;
     app.cancellable_task(format!("Installing {}", pack.title), move |progress, bus| async move {
-        let inst = mrpack::install_from_modrinth(&version, &pack.title, pack.icon_url.as_deref(), group, parallel, &progress).await?;
+        let (inst, warning) =
+            mrpack::install_from_modrinth(&version, &pack.title, pack.icon_url.as_deref(), group, parallel, &progress).await?;
         bus.send(Event::InstancesChanged(Some(inst.id)));
+        if let Some(warning) = warning {
+            bus.send(Event::Error(warning));
+        }
         Ok(())
     });
     true
@@ -393,8 +397,11 @@ impl App {
                     bus.send(Event::PackUpdated(inst.id));
                 }
                 None => {
-                    let inst = import::import_file(path, group, parallel, &progress).await?;
+                    let (inst, warning) = import::import_file(path, group, parallel, &progress).await?;
                     bus.send(Event::InstancesChanged(Some(inst.id)));
+                    if let Some(warning) = warning {
+                        bus.send(Event::Error(warning));
+                    }
                 }
             }
             Ok(())

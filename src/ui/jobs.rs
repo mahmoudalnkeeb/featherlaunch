@@ -12,6 +12,7 @@ use crate::minecraft::instance::Loader;
 use crate::minecraft::meta::loaders;
 use crate::minecraft::meta::mojang;
 use crate::minecraft::skin;
+use crate::modplatform::curseforge;
 use crate::modplatform::modrinth::{self, ContentKind};
 use crate::tasks::Progress;
 
@@ -114,14 +115,19 @@ impl App {
         self.loader_requested.remove(&key);
     }
 
-    pub(super) fn search_modrinth(&self, query: String, kind: ContentKind, target: Option<(String, Loader)>, offset: u64) {
+    pub(super) fn search_content(&self, query: String, kind: ContentKind, target: Option<(String, Loader)>, offset: u64, curseforge: bool) {
         let bus = self.bus.clone();
         self.rt.spawn(async move {
             let (mc, loader) = target.unzip();
-            match modrinth::search(&query, kind, mc.as_deref(), loader, offset).await {
+            let results = if curseforge {
+                curseforge::search(&query, kind, mc.as_deref(), loader, offset).await
+            } else {
+                modrinth::search(&query, kind, mc.as_deref(), loader, offset).await
+            };
+            match results {
                 Ok(results) => bus.send(Event::Search { kind, offset, results }),
                 Err(e) => {
-                    crate::log::error(&format!("Searching Modrinth failed: {e:#}"));
+                    crate::log::error(&format!("Searching failed: {e:#}"));
                     bus.send(Event::SearchFailed(kind));
                 }
             }

@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 use crate::minecraft::instance::{Instance, Loader, PackSource};
 use crate::modplatform::modrinth::{self, ContentIndex, ContentKind, Version};
+use crate::modplatform::{curseforge, import};
 use crate::net::{self, Download};
 use crate::tasks::Progress;
 use crate::{icons, log, paths};
@@ -197,10 +198,11 @@ pub async fn install_from_modrinth(
     group: String,
     parallel: usize,
     progress: &Progress,
-) -> Result<Instance> {
+) -> Result<(Instance, Option<String>)> {
     let (path, _pack_file) = download_pack(version, title, progress).await?;
-    let mut inst = import(path, group, parallel, progress).await?;
-    if let Some(pack) = &mut inst.pack {
+    let (mut inst, warning) = import::import_file(path, group, parallel, progress).await?;
+    // Only Modrinth packs can update in place, so a CurseForge one keeps no project to update from.
+    if let Some(pack) = inst.pack.as_mut().filter(|_| !version.project_id.starts_with(curseforge::PREFIX)) {
         pack.title = title.to_string();
         pack.project_id = Some(version.project_id.clone());
         pack.version_id = Some(version.id.clone());
@@ -211,7 +213,7 @@ pub async fn install_from_modrinth(
     {
         log::error(&format!("Downloading the icon of {title} failed: {e:#}"));
     }
-    Ok(inst)
+    Ok((inst, warning))
 }
 
 pub async fn import(pack: PathBuf, group: String, parallel: usize, progress: &Progress) -> Result<Instance> {

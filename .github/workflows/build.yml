@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Turns on CurseForge in the build. Without the secret it stays off.
+  FEATHERLAUNCH_CURSEFORGE_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
+
 jobs:
   windows:
     runs-on: windows-latest
