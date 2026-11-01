@@ -16,7 +16,7 @@ pub enum Confirm {
     RemoveAccount(String),
     Discard(Page),
     LowMemory { id: String, offline: bool, memory_mb: u32, free_mb: u64 },
-    UncheckedPack { path: PathBuf, group: String, files: Vec<String> },
+    UncheckedPack { path: PathBuf, group: String, update: Option<String>, files: Vec<String> },
     DeleteWorld(Box<World>),
     UploadLog { text: String },
 }
@@ -143,7 +143,7 @@ fn apply(app: &mut App, confirm: Confirm) {
         }
         Confirm::Discard(page) => app.go_now(page),
         Confirm::LowMemory { id, offline, .. } => app.launch_despite_low_memory(&id, offline),
-        Confirm::UncheckedPack { path, group, .. } => app.import_pack(path, group),
+        Confirm::UncheckedPack { path, group, update, .. } => app.import_pack(path, group, update),
         Confirm::UploadLog { text } => app.upload_log(text),
         Confirm::DeleteWorld(world) => {
             app.task(format!("Deleting {}", world.name), move |_, bus| async move {

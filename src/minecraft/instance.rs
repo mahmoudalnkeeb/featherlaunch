@@ -53,6 +53,19 @@ pub struct ExportInfo {
     pub summary: String,
 }
 
+/// The modpack an instance was made from.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PackSource {
+    pub title: String,
+    pub version: String,
+    /// Modrinth IDs. A pack imported from a file has none, and can only update from a file.
+    pub project_id: Option<String>,
+    pub version_id: Option<String>,
+    /// What the pack put in the game folder, so an update can remove what it no longer has.
+    pub files: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Instance {
@@ -73,6 +86,7 @@ pub struct Instance {
     pub last_played: u64,
     pub play_seconds: u64,
     pub export: ExportInfo,
+    pub pack: Option<PackSource>,
     /// Modification time of `icon.png`, so a changed icon gets a new cache key.
     #[serde(skip)]
     pub icon_stamp: Option<u128>,
@@ -95,6 +109,7 @@ impl Default for Instance {
             last_played: 0,
             play_seconds: 0,
             export: ExportInfo::default(),
+            pack: None,
             icon_stamp: None,
         }
     }
@@ -207,6 +222,7 @@ impl Instance {
             last_played: _,
             play_seconds: _,
             export: _,
+            pack: _,
             icon_stamp: _,
         } = edited.clone();
         self.name = name;
@@ -347,6 +363,7 @@ mod tests {
             last_played: 1,
             play_seconds: 1,
             export: ExportInfo::default(),
+            pack: None,
             icon_stamp: None,
         };
         saved.apply_settings(&edited);

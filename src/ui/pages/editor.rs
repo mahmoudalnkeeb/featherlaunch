@@ -9,8 +9,8 @@ use eframe::egui::{self, Pos2, Rect, RichText, Sense, UiBuilder, vec2};
 use crate::minecraft::instance::{ExportInfo, Instance, Loader, World};
 use crate::minecraft::logs::{self, SavedLog};
 use crate::minecraft::world;
-use crate::modplatform::export;
 use crate::modplatform::modrinth::{self, ContentKind, LocalFile, SearchResponse, Update};
+use crate::modplatform::{export, mrpack};
 use crate::ui::dialogs::Confirm;
 use crate::ui::glyph::Glyph;
 use crate::ui::project::{self, Browser, Request};
@@ -57,6 +57,10 @@ pub struct Editor {
     saved_logs: Option<Vec<SavedLog>>,
     open_log: Option<(String, console::Console)>,
     export: Option<ExportForm>,
+    pack_requested: bool,
+    pack_failed: bool,
+    pack_versions: Option<Vec<modrinth::Version>>,
+    pack_idx: usize,
     stale: bool,
     /// Numbers each read, so only the answer to the latest one is used.
     request: u64,
@@ -91,6 +95,10 @@ impl Editor {
             saved_logs: None,
             open_log: None,
             export: None,
+            pack_requested: false,
+            pack_failed: false,
+            pack_versions: None,
+            pack_idx: 0,
             stale: true,
             request: 0,
             browse: false,
@@ -136,6 +144,24 @@ impl Editor {
     pub fn on_worlds(&mut self, request: u64, worlds: Vec<World>) {
         if request == self.request {
             self.worlds = Some(worlds);
+        }
+    }
+
+    fn is_pack(&self, project: &str) -> bool {
+        self.inst.pack.as_ref().is_some_and(|p| p.project_id.as_deref() == Some(project))
+    }
+
+    pub fn on_pack_versions(&mut self, project: &str, versions: Vec<modrinth::Version>) {
+        if self.is_pack(project) {
+            self.pack_failed = false;
+            self.pack_idx = 0;
+            self.pack_versions = Some(versions);
+        }
+    }
+
+    pub fn on_pack_versions_failed(&mut self, project: &str) {
+        if self.is_pack(project) {
+            self.pack_failed = true;
         }
     }
 
@@ -333,7 +359,8 @@ fn settings(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
     let mut open_game_dir = false;
     egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
         widgets::form(ui, |ui| {
-            widgets::form_section(ui, "General", true);
+            pack_section(app, ui, ed);
+            widgets::form_section(ui, "General", ed.inst.pack.is_none());
             icon_row(app, ui, ed);
             let d = &mut ed.draft;
             widgets::form_row(ui, "Name", |ui| {
@@ -453,6 +480,76 @@ fn settings(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
     if open_game_dir {
         app.open_folder(&ed.inst.game_dir());
     }
+}
+
+fn pack_section(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
+    let Some(pack) = ed.inst.pack.clone() else { return };
+    let running = app.running.contains_key(&ed.inst.id);
+    widgets::form_section(ui, "Modpack", true);
+    widgets::form_row(ui, "Installed", |ui| {
+        let text = if pack.version.is_empty() { pack.title.clone() } else { format!("{} {}", pack.title, pack.version) };
+        widgets::line_tip(ui, &text, theme::label(), theme::TEXT, theme::H_MD);
+    });
+    if let Some(project) = pack.project_id.as_deref() {
+        if !ed.pack_requested {
+            ed.pack_requested = true;
+            app.load_project_versions(project.to_string(), ContentKind::Modpack, None);
+        }
+        widgets::form_row(ui, "Version", |ui| match &ed.pack_versions {
+            _ if ed.pack_failed => {
+                if widgets::notice(ui, theme::ERR, "Couldn't load versions.", Some("Try again")) {
+                    ed.pack_failed = false;
+                    ed.pack_requested = false;
+                }
+            }
+            None => {
+                ui.add(egui::Spinner::new().color(theme::ACCENT));
+            }
+            Some(versions) if versions.is_empty() => widgets::hint(ui, "This pack has no versions."),
+            Some(versions) => {
+                ed.pack_idx = ed.pack_idx.min(versions.len() - 1);
+                let label = |v: &modrinth::Version| format!("{} ({})", v.version_number, v.game_versions.join(", "));
+                widgets::combo_cut(ui, "pack-update", label(&versions[ed.pack_idx]), ui.available_width(), |ui| {
+                    for (i, v) in versions.iter().enumerate() {
+                        ui.selectable_value(&mut ed.pack_idx, i, label(v));
+                    }
+                });
+                let chosen = &versions[ed.pack_idx];
+                let current = pack.version_id.as_deref() == Some(chosen.id.as_str());
+                if let Some(changelog) = chosen.changelog.as_deref().filter(|c| !c.is_empty()) {
+                    egui::ScrollArea::vertical().id_salt("pack-changelog").max_height(120.0).show(ui, |ui| {
+                        ui.label(RichText::new(changelog).font(theme::label()).color(theme::TEXT_MUTED));
+                    });
+                }
+                let update =
+                    ui.add_enabled_ui(!running && !current, |ui| widgets::pill(ui, Kind::Secondary, None, "Update to this version"));
+                if update.inner.clicked() {
+                    update_pack(app, &ed.inst, chosen.clone());
+                }
+                if running {
+                    widgets::hint(ui, "Close the game to update.");
+                }
+            }
+        });
+    }
+    widgets::form_row(ui, "From a file", |ui| {
+        let button = ui.add_enabled_ui(!running, |ui| widgets::pill(ui, Kind::Ghost, None, "Update from file…"));
+        if button.inner.clicked()
+            && let Some(path) = rfd::FileDialog::new().add_filter("Modrinth modpack", &["mrpack"]).pick_file()
+        {
+            app.read_pack(path, String::new(), Some(ed.inst.id.clone()));
+        }
+    });
+}
+
+fn update_pack(app: &mut App, inst: &Instance, version: modrinth::Version) {
+    let inst = inst.clone();
+    let parallel = app.cfg.parallel_downloads;
+    app.cancellable_task(format!("Updating {}", inst.name), move |progress, bus| async move {
+        let inst = mrpack::update_from_modrinth(inst, &version, parallel, &progress).await?;
+        bus.send(Event::PackUpdated(inst.id));
+        Ok(())
+    });
 }
 
 fn save_bar(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
