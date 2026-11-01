@@ -55,7 +55,8 @@ pub fn unchecked_files(path: &Path) -> Result<Vec<String>> {
         return mrpack::unchecked_files(path);
     }
     let archive = ZipArchive::new(File::open(path)?)?;
-    Ok(archive.file_names().filter(|n| n.ends_with(".jar")).map(str::to_string).collect())
+    let is_mod = |n: &&str| n.ends_with(".jar") || (n.contains("mods/") && !n.ends_with('/'));
+    Ok(archive.file_names().filter(is_mod).map(str::to_string).collect())
 }
 
 /// Extracts what's under `prefix` into `target`, skipping paths that would leave it.
@@ -162,7 +163,8 @@ fn import_launcher_zip(path: &Path, root: &str, group: String) -> Result<Instanc
     let mut archive = ZipArchive::new(File::open(path)?)?;
     let cfg = read_entry(&mut archive, &format!("{root}instance.cfg"))?;
     let mmc_pack = read_entry(&mut archive, &format!("{root}mmc-pack.json"))?;
-    let inst = Instance { group, ..instance_from_launcher(&cfg, &mmc_pack)? }.create()?;
+    // JVM arguments can run any command, and a zip can come from anyone.
+    let inst = Instance { group, jvm_args: None, ..instance_from_launcher(&cfg, &mmc_pack)? }.create()?;
     let game_dir = inst.game_dir();
     let mut partial = PartialInstance::new(inst);
     for folder in ["minecraft/", ".minecraft/"] {
@@ -176,8 +178,8 @@ fn import_launcher_zip(path: &Path, root: &str, group: String) -> Result<Instanc
 fn import_own_zip(path: &Path, group: String) -> Result<Instance> {
     let mut archive = ZipArchive::new(File::open(path)?)?;
     let saved: Instance = serde_json::from_str(&read_entry(&mut archive, "instance.json")?).context("reading instance.json")?;
-    // A path from the PC it was exported on.
-    let inst = Instance { group, java_path: None, ..saved }.create()?;
+    // A path from the PC it was exported on, and JVM arguments, which can run any command.
+    let inst = Instance { group, java_path: None, jvm_args: None, ..saved }.create()?;
     let dir = inst.dir();
     let partial = PartialInstance::new(inst);
     extract_under(&mut archive, ".minecraft/", &dir.join(".minecraft"))?;
@@ -355,6 +357,8 @@ mod tests {
         let path = dir.join("a.zip");
         zip_with(&path, &[("instance.cfg", ""), ("minecraft/mods/a.jar", ""), ("minecraft/options.txt", "")]);
         assert_eq!(unchecked_files(&path).unwrap(), ["minecraft/mods/a.jar"]);
+        zip_with(&path, &[("instance.cfg", ""), ("minecraft/coremods/a.zip", ""), ("minecraft/mods/b.litemod", "")]);
+        assert_eq!(unchecked_files(&path).unwrap(), ["minecraft/coremods/a.zip", "minecraft/mods/b.litemod"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

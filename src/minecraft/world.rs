@@ -15,8 +15,16 @@ use crate::modplatform::import::extract_under;
 use crate::modplatform::mrpack::safe_rel_path;
 use crate::paths;
 
+/// Minecraft's own limit. A world can come from anywhere, and deeper nesting could overflow the stack.
+const MAX_DEPTH: usize = 512;
+/// Far beyond any real level.dat. A small file can unpack to gigabytes.
+const MAX_LEVEL_DAT: u64 = 64 * 1024 * 1024;
+
 /// The next byte offset after a named binary tag payload, or `None` if the data is cut short.
-fn skip(b: &[u8], p: usize, tag: u8) -> Option<usize> {
+fn skip(b: &[u8], p: usize, tag: u8, depth: usize) -> Option<usize> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
     let int = |at: usize| Some(i32::from_be_bytes(b.get(at..at + 4)?.try_into().ok()?).max(0) as usize);
     match tag {
         1 => Some(p + 1),
@@ -29,7 +37,10 @@ fn skip(b: &[u8], p: usize, tag: u8) -> Option<usize> {
             let item = *b.get(p)?;
             let mut at = p + 5;
             for _ in 0..int(p + 1)? {
-                at = skip(b, at, item)?;
+                at = skip(b, at, item, depth + 1)?;
+                if at > b.len() {
+                    return None;
+                }
             }
             Some(at)
         }
@@ -38,7 +49,7 @@ fn skip(b: &[u8], p: usize, tag: u8) -> Option<usize> {
             loop {
                 let (next, entry) = entry(b, at)?;
                 let Some((tag, _)) = entry else { return Some(next) };
-                at = skip(b, next, tag)?;
+                at = skip(b, next, tag, depth + 1)?;
             }
         }
         11 => Some(p + 4 + 4 * int(p)?),
@@ -69,7 +80,7 @@ fn child(b: &[u8], compound: usize, name: &[u8]) -> Option<(usize, u8)> {
         if found == name {
             return Some((payload, tag));
         }
-        at = skip(b, payload, tag)?;
+        at = skip(b, payload, tag, 0)?;
     }
 }
 
@@ -78,12 +89,13 @@ fn level_name_range(b: &[u8]) -> Option<Range<usize>> {
     let (root, Some((10, _))) = entry(b, 0)? else { return None };
     let (data, 10) = child(b, root, b"Data")? else { return None };
     let (name, 8) = child(b, data, b"LevelName")? else { return None };
-    Some(name..skip(b, name, 8)?)
+    let end = skip(b, name, 8, 0)?;
+    (end <= b.len()).then_some(name..end)
 }
 
 fn read_level_dat(world: &Path) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    GzDecoder::new(std::fs::File::open(world.join("level.dat"))?).read_to_end(&mut out)?;
+    GzDecoder::new(std::fs::File::open(world.join("level.dat"))?).take(MAX_LEVEL_DAT).read_to_end(&mut out)?;
     Ok(out)
 }
 
@@ -223,6 +235,28 @@ mod tests {
         let (after, _) = child(&data, compound, b"after").unwrap();
         assert_eq!(&data[after..after + 4], [0, 0, 0, 7]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_hostile_level_dat_has_no_name() {
+        // Lists nested far past any real world.
+        let mut deep = named(9, "x", &[]);
+        for _ in 0..100_000 {
+            deep.extend([9, 0, 0, 0, 1]);
+        }
+        let mut root = deep;
+        root.push(0);
+        assert_eq!(level_name_range(&named(10, "", &root)), None);
+
+        // A long list of bytes that aren't there.
+        let mut list = named(9, "x", &[1, 0x7f, 0xff, 0xff, 0xff]);
+        list.push(0);
+        assert_eq!(level_name_range(&named(10, "", &list)), None);
+
+        // A name that claims to run past the end of the file.
+        let mut data = named(8, "LevelName", &[0, 200, b'x']);
+        data.push(0);
+        assert_eq!(level_name_range(&named(10, "", &named(10, "Data", &data))), None);
     }
 
     #[test]

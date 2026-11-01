@@ -447,7 +447,7 @@ fn settings(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
                 widgets::form_row(ui, "Minimum memory", |ui| {
                     widgets::slider(ui, &mut min, 256..=8192, 256.0, " MB");
                 });
-                d.min_memory_mb = Some(min);
+                d.min_memory_mb = (min != app.cfg.min_memory_mb).then_some(min);
             } else {
                 d.min_memory_mb = None;
             }
@@ -626,6 +626,7 @@ fn content(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind)
 }
 
 fn export_tab(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
+    let running = app.running.contains_key(&ed.inst.id);
     let inst = &ed.inst;
     let form = ed.export.get_or_insert_with(|| ExportForm {
         as_pack: false,
@@ -665,7 +666,11 @@ fn export_tab(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
                 });
             }
             ui.add_space(theme::S3);
-            start = widgets::pill(ui, Kind::Secondary, None, "Export…").clicked();
+            let button = ui.add_enabled_ui(!running, |ui| widgets::pill(ui, Kind::Secondary, None, "Export…"));
+            start = button.inner.clicked();
+            if running {
+                widgets::hint(ui, "Close the game to export. It keeps some files locked.");
+            }
         });
     });
     if !start {
