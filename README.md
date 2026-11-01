@@ -64,6 +64,13 @@ packaging a custom build, please do the following as a basic courtesy:
   FEATHERLAUNCH_MSA_CLIENT_ID=your-client-id cargo build --release
   ```
 
+- CurseForge support is off unless you build with your own API key, which you can apply for at
+  <https://console.curseforge.com/>:
+
+  ```bash
+  FEATHERLAUNCH_CURSEFORGE_KEY=your-key cargo build --release
+  ```
+
 If you have any questions or want any clarification on the above conditions, please open an issue
 and ask.
 

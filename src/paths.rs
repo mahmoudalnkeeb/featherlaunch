@@ -59,7 +59,7 @@ pub fn temp_pack_path(file_name: &str) -> PathBuf {
 }
 
 fn is_temp_pack(name: &str) -> bool {
-    name.ends_with(".mrpack")
+    (name.ends_with(".mrpack") || name.ends_with(".zip"))
         && name.split_once('-').is_some_and(|(prefix, _)| prefix.len() == 32 && prefix.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
@@ -167,6 +167,7 @@ mod tests {
     #[test]
     fn recognizes_only_temporary_pack_downloads() {
         assert!(is_temp_pack("0123456789abcdef0123456789abcdef-Fabulously Optimized-6.2.mrpack"));
+        assert!(is_temp_pack("0123456789abcdef0123456789abcdef-All the Mods.zip"));
         assert!(!is_temp_pack("Fabulously-Optimized.mrpack"));
         assert!(!is_temp_pack("0123456789abcdef0123456789abcdef-x.jar"));
         assert!(!is_temp_pack("version_manifest_v2.json"));
