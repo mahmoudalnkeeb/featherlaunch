@@ -88,6 +88,24 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
             widgets::form_section(ui, "Advanced", false);
             hook_rows(ui, &mut draft.hooks);
 
+            if cfg!(target_os = "linux") {
+                widgets::form_section(ui, "Linux", false);
+                let linux = &mut draft.linux;
+                let row = |ui: &mut egui::Ui, label: &str, text: &str, on: &mut bool| {
+                    widgets::form_row(ui, label, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.set_min_height(theme::H_MD);
+                            widgets::toggle_labeled(ui, on, text);
+                        });
+                    });
+                };
+                row(ui, "GameMode", "Ask GameMode to tune the system while playing", &mut linux.gamemode);
+                row(ui, "MangoHud", "Show the MangoHud overlay", &mut linux.mangohud);
+                row(ui, "Graphics", "Use the discrete GPU", &mut linux.discrete_gpu);
+                row(ui, "GLFW", "Use the system's GLFW, which can fix Wayland problems", &mut linux.system_glfw);
+                row(ui, "OpenAL", "Use the system's OpenAL", &mut linux.system_openal);
+            }
+
             widgets::form_section(ui, "Downloads", false);
             widgets::form_row(ui, "Parallel downloads", |ui| {
                 widgets::slider(ui, &mut draft.parallel_downloads, 1..=16, 1.0, "");

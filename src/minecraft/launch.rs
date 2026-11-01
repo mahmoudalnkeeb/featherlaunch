@@ -157,6 +157,8 @@ pub async fn prepare(inst: &Instance, account: &Account, offline: bool, cfg: &Co
     let extra = inst.jvm_args.as_deref().unwrap_or(&cfg.jvm_args);
     args.extend(extra.split_whitespace().map(String::from));
     args.push("-Dlog4j2.formatMsgNoLookups=true".into());
+    let linux = if cfg!(target_os = "linux") { cfg.linux } else { Default::default() };
+    args.extend(linux.jvm_args());
 
     match &version.arguments {
         Some(a) if !a.jvm.is_empty() => {
@@ -207,7 +209,9 @@ pub async fn prepare(inst: &Instance, account: &Account, offline: bool, cfg: &Co
         let status = shell(&settings.pre_launch, &game_dir, &env).status().await.context("starting the pre-launch command")?;
         anyhow::ensure!(status.success(), "The pre-launch command failed ({status}), so the game wasn't started");
     }
-    let hooks = Hooks { wrapper: settings.wrapper, post_exit: settings.post_exit, env };
+    env.extend(linux.env());
+    let wrapper = linux.wrappers().into_iter().chain([settings.wrapper.as_str()]).collect::<Vec<_>>().join(" ");
+    let hooks = Hooks { wrapper, post_exit: settings.post_exit, env };
     Ok(Prepared { java, args, game_dir, notes, hooks })
 }
 
