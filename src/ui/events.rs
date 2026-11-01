@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use tokio::sync::oneshot;
 
-use super::dialogs::Confirm;
+use super::dialogs::{Confirm, OptionalFiles};
 use super::{App, LauncherUpdate, SkinTex, editor};
 use crate::config::OnLaunch;
 use crate::java::JavaInstall;
@@ -34,6 +34,7 @@ pub enum Event {
     InstanceIconChanged(String),
     PackRead { path: PathBuf, group: String, update: Option<String>, files: Vec<String> },
     PackUpdated(String),
+    PackOptional { files: Vec<String>, reply: oneshot::Sender<Vec<String>> },
     Files { inst: String, request: u64, files: Vec<LocalFile> },
     Worlds { inst: String, request: u64, worlds: Vec<World> },
     SavedLogs { inst: String, request: u64, logs: Vec<SavedLog> },
@@ -116,6 +117,9 @@ impl App {
                     } else {
                         self.confirm = Some(Confirm::UncheckedPack { path, group, update, files });
                     }
+                }
+                Event::PackOptional { files, reply } => {
+                    self.optional.push(OptionalFiles { files: files.into_iter().map(|f| (f, true)).collect(), reply });
                 }
                 Event::PackUpdated(id) => {
                     self.reload_instances(Some(id.clone()));

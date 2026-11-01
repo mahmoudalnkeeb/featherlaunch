@@ -546,9 +546,9 @@ fn pack_section(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor) {
 
 fn update_pack(app: &mut App, inst: &Instance, version: modrinth::Version) {
     let inst = inst.clone();
-    let parallel = app.cfg.parallel_downloads;
+    let options = app.pack_options();
     app.cancellable_task(format!("Updating {}", inst.name), move |progress, bus| async move {
-        let inst = mrpack::update_from_modrinth(inst, &version, parallel, &progress).await?;
+        let inst = mrpack::update_from_modrinth(inst, &version, &options, &progress).await?;
         bus.send(Event::PackUpdated(inst.id));
         Ok(())
     });

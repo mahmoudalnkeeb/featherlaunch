@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use eframe::egui::{self, Color32, RichText};
+use tokio::sync::oneshot;
 
 use super::widgets::{self, Kind};
 use super::{App, Event, Page, theme};
@@ -19,6 +20,12 @@ pub enum Confirm {
     UncheckedPack { path: PathBuf, group: String, update: Option<String>, files: Vec<String> },
     DeleteWorld(Box<World>),
     UploadLog { text: String },
+}
+
+/// A pack's optional files, waiting for the player to choose. Dropping it cancels the install.
+pub struct OptionalFiles {
+    pub files: Vec<(String, bool)>,
+    pub reply: oneshot::Sender<Vec<String>>,
 }
 
 /// How many paths a dialog names before summing up the rest.
@@ -152,6 +159,29 @@ fn apply(app: &mut App, confirm: Confirm) {
                 Ok(())
             });
         }
+    }
+}
+
+pub fn optional_window(app: &mut App, ctx: &egui::Context) {
+    let Some(pending) = app.optional.first_mut() else { return };
+    let mut install = false;
+    let (_, closed) = widgets::dialog(ctx, "optional-files", "Optional files", 460.0, |ui| {
+        ui.label(RichText::new("This pack has extras you can leave out. Heavy ones can slow older PCs.").color(theme::TEXT));
+        ui.add_space(theme::S2);
+        egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+            for (path, on) in &mut pending.files {
+                widgets::toggle_labeled(ui, on, path.rsplit('/').next().unwrap_or(path));
+            }
+        });
+        widgets::dialog_buttons(ui, |ui| {
+            install = widgets::pill(ui, Kind::Primary, None, "Install").clicked();
+        });
+    });
+    if install {
+        let pending = app.optional.remove(0);
+        let _ = pending.reply.send(pending.files.into_iter().filter(|(_, on)| *on).map(|(path, _)| path).collect());
+    } else if closed {
+        app.optional.remove(0);
     }
 }
 
