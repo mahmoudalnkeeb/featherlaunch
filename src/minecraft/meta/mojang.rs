@@ -131,9 +131,9 @@ impl Rule {
                 return false;
             }
         }
-        // No optional features (demo, custom resolution, quick play) are turned on.
+        // Custom resolution is always on; the other optional features (demo, quick play) are off.
         if let Some(features) = &self.features
-            && features.values().any(|wanted| *wanted)
+            && features.iter().any(|(name, wanted)| *wanted && name != "has_custom_resolution")
         {
             return false;
         }
@@ -470,6 +470,7 @@ mod tests {
         assert!(!rules_allow(&rule(&disallow_here)));
         assert!(!rules_allow(&rule(r#"[{"action":"allow","os":{"arch":"x86"}}]"#)));
         assert!(!rules_allow(&rule(r#"[{"action":"allow","features":{"is_demo_user":true}}]"#)));
+        assert!(rules_allow(&rule(r#"[{"action":"allow","features":{"has_custom_resolution":true}}]"#)));
     }
 
     #[test]

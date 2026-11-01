@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, RichText};
 
-use crate::config::{Config, LOW_END_JVM_ARGS, OnLaunch};
+use crate::config::{Config, GameWindow, LOW_END_JVM_ARGS, OnLaunch};
 use crate::paths;
 use crate::ui::glyph::Glyph;
 use crate::ui::widgets::{self, Kind};
@@ -23,6 +23,10 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                 widgets::slider(ui, &mut draft.memory_mb, 512..=16384, 256.0, " MB");
                 widgets::hint(ui, "3–4 GB suits most modpacks on a 16 GB PC.");
             });
+            widgets::form_row(ui, "Minimum memory", |ui| {
+                widgets::slider(ui, &mut draft.min_memory_mb, 256..=8192, 256.0, " MB");
+            });
+            window_rows(ui, &mut draft.window);
             widgets::form_row(ui, "Low memory", |ui| {
                 ui.horizontal(|ui| {
                     ui.set_min_height(theme::H_MD);
@@ -129,6 +133,23 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
         });
     });
     app.settings_draft = Some(draft);
+}
+
+/// The game window's size, shared with the instance page.
+pub fn window_rows(ui: &mut egui::Ui, window: &mut GameWindow) {
+    widgets::form_row(ui, "Window width", |ui| {
+        widgets::slider(ui, &mut window.width, 640..=3840, 1.0, " px");
+    });
+    widgets::form_row(ui, "Window height", |ui| {
+        widgets::slider(ui, &mut window.height, 480..=2160, 1.0, " px");
+        widgets::hint(ui, "A smaller window runs faster on older PCs.");
+    });
+    widgets::form_row(ui, "Fullscreen", |ui| {
+        ui.horizontal(|ui| {
+            ui.set_min_height(theme::H_MD);
+            widgets::toggle_labeled(ui, &mut window.fullscreen, "Start the game in fullscreen");
+        });
+    });
 }
 
 fn save_bar(app: &mut App, ui: &mut egui::Ui, draft: &mut Config) {

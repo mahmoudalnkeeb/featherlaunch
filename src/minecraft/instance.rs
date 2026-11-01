@@ -7,6 +7,7 @@ use std::time::SystemTime;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::config::GameWindow;
 use crate::paths;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -56,6 +57,8 @@ pub struct Instance {
     /// `None` uses the newest loader version available at install time.
     pub loader_version: Option<String>,
     pub memory_mb: Option<u32>,
+    pub min_memory_mb: Option<u32>,
+    pub window: Option<GameWindow>,
     pub java_path: Option<String>,
     pub jvm_args: Option<String>,
     pub last_played: u64,
@@ -75,6 +78,8 @@ impl Default for Instance {
             loader: Loader::Vanilla,
             loader_version: None,
             memory_mb: None,
+            min_memory_mb: None,
+            window: None,
             java_path: None,
             jvm_args: None,
             last_played: 0,
@@ -188,6 +193,8 @@ impl Instance {
             loader,
             loader_version,
             memory_mb,
+            min_memory_mb,
+            window,
             java_path,
             jvm_args,
             last_played: _,
@@ -200,6 +207,8 @@ impl Instance {
         self.loader = loader;
         self.loader_version = loader_version;
         self.memory_mb = memory_mb;
+        self.min_memory_mb = min_memory_mb;
+        self.window = window;
         self.java_path = java_path;
         self.jvm_args = jvm_args;
     }
@@ -339,6 +348,8 @@ mod tests {
             loader: Loader::Fabric,
             loader_version: Some("0.16".into()),
             memory_mb: Some(4096),
+            min_memory_mb: Some(1024),
+            window: Some(GameWindow { width: 1280, height: 720, fullscreen: true }),
             java_path: Some("java".into()),
             jvm_args: Some("-Xss1M".into()),
             last_played: 1,
@@ -350,6 +361,7 @@ mod tests {
         assert_eq!(saved.loader, Loader::Fabric);
         assert_eq!(saved.loader_version.as_deref(), Some("0.16"));
         assert_eq!((saved.memory_mb, saved.java_path.as_deref(), saved.jvm_args.as_deref()), (Some(4096), Some("java"), Some("-Xss1M")));
+        assert_eq!((saved.min_memory_mb, saved.window), (edited.min_memory_mb, edited.window));
         assert_eq!((saved.id.as_str(), saved.play_seconds, saved.last_played, saved.icon_stamp), ("a", 3600, 99, Some(7)));
     }
 }
