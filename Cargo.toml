@@ -19,6 +19,7 @@ sha1 = "0.10"
 sha2 = "0.10"
 hex = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
 # Windows Credential Manager; on Linux the Secret Service (GNOME Keyring, KWallet) over pure-Rust D-Bus.
 keyring = { version = "3", features = ["windows-native", "async-secret-service", "async-io", "crypto-rust"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
@@ -44,7 +45,6 @@ raw-window-handle = "0.6"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "multipart"] }
 # Adoptium ships Linux JREs as .tar.gz.
 tar = "0.4"
-flate2 = "1"
 
 [profile.release]
 opt-level = 3

@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use eframe::egui::{self, Color32, RichText};
 
 use super::widgets::{self, Kind};
-use super::{App, Page, theme};
-use crate::minecraft::instance::Instance;
+use super::{App, Event, Page, theme};
+use crate::minecraft::instance::{Instance, World};
 use crate::modplatform::modrinth::{self, ContentKind, LocalFile};
 
 pub enum Confirm {
@@ -17,6 +17,7 @@ pub enum Confirm {
     Discard(Page),
     LowMemory { id: String, offline: bool, memory_mb: u32, free_mb: u64 },
     UncheckedPack { path: PathBuf, group: String, files: Vec<String> },
+    DeleteWorld(Box<World>),
 }
 
 /// How many paths a dialog names before summing up the rest.
@@ -97,6 +98,14 @@ fn prompt(app: &App, confirm: &Confirm) -> Option<Prompt> {
             confirm: "Install anyway",
             enabled: true,
         },
+        Confirm::DeleteWorld(world) => Prompt {
+            title: "Delete world",
+            body: format!("\"{}\" will be deleted, along with everything built in it.", world.name),
+            note: cannot_undo,
+            cancel: "Cancel",
+            confirm: "Delete",
+            enabled: true,
+        },
     })
 }
 
@@ -123,6 +132,13 @@ fn apply(app: &mut App, confirm: Confirm) {
         Confirm::Discard(page) => app.go_now(page),
         Confirm::LowMemory { id, offline, .. } => app.launch_despite_low_memory(&id, offline),
         Confirm::UncheckedPack { path, group, .. } => app.import_pack(path, group),
+        Confirm::DeleteWorld(world) => {
+            app.task(format!("Deleting {}", world.name), move |_, bus| async move {
+                tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&world.path)).await??;
+                bus.send(Event::ContentChanged);
+                Ok(())
+            });
+        }
     }
 }
 
