@@ -398,25 +398,96 @@ pub fn list_row(ui: &mut Ui, height: f32, sense: Sense, selected: bool) -> (Rect
 
 pub const LIST_GAP: f32 = theme::S1;
 
-pub fn project_row(ui: &mut Ui, tex: Option<egui::TextureId>, title: &str, subtitle: &str, detail: &str, selected: bool) -> Response {
-    let height = if detail.is_empty() { 56.0 } else { 68.0 };
-    let (rect, response) = list_row(ui, height, Sense::click(), selected);
+/// What sits to the left of a project's icon.
+#[derive(Clone, Copy, PartialEq)]
+pub enum CardMark {
+    /// Nothing, on pages where projects can't be picked.
+    None,
+    /// Already in the instance, so there's nothing to pick.
+    Installed,
+    /// A box that picks the project.
+    Check(bool),
+}
+
+const CARD_HEIGHT: f32 = 76.0;
+const CHECK_SIZE: f32 = 18.0;
+/// The box's click area, larger than the box so it's easy to hit.
+const CHECK_TARGET: f32 = 32.0;
+
+fn check_box(ui: &Ui, rect: Rect, response: &Response, on: bool) {
+    let box_rect = Rect::from_center_size(rect.center(), vec2(CHECK_SIZE, CHECK_SIZE));
+    let radius = CornerRadius::same(theme::R_SM);
+    if on {
+        ui.painter().rect_filled(box_rect, radius, theme::ACCENT);
+        glyph::paint(ui.painter(), glyph::centered(box_rect, 14.0), Glyph::Check, theme::ON_ACCENT);
+    } else {
+        ui.painter().rect_filled(box_rect, radius, if response.hovered() { theme::HOVER } else { theme::RAISED });
+        ui.painter().rect_stroke(box_rect, radius, Stroke::new(1.0_f32, theme::TEXT_FAINT), StrokeKind::Inside);
+    }
+    focus_ring(ui, box_rect, response);
+}
+
+/// A project in a results grid. Returns the card and, when it has one, its box.
+pub fn project_card(
+    ui: &mut Ui,
+    width: f32,
+    tex: Option<egui::TextureId>,
+    title: &str,
+    subtitle: &str,
+    detail: &str,
+    mark: CardMark,
+) -> (Response, Option<Response>) {
+    let selected = mark == CardMark::Check(true);
+    let (rect, response) = ui.allocate_exact_size(vec2(width, CARD_HEIGHT), Sense::click());
+    let mut check = None;
     if ui.is_rect_visible(rect) {
-        let icon_size = 40.0;
-        let icon_rect = Rect::from_min_size(rect.min + vec2(10.0, (height - icon_size) / 2.0), vec2(icon_size, icon_size));
-        icon(ui, icon_rect, tex, title, theme::TEXT_MUTED);
-        let x = icon_rect.right() + theme::S3;
-        let width = rect.right() - x - 10.0;
-        let top = rect.top() + if detail.is_empty() { 9.0 } else { 8.0 };
-        line(ui, Pos2::new(x, top), title, theme::body_strong(), theme::TEXT, width);
-        line(ui, Pos2::new(x, top + 20.0), subtitle, theme::label(), theme::TEXT_MUTED, width);
-        if !detail.is_empty() {
-            line(ui, Pos2::new(x, top + 37.0), detail, theme::label(), theme::TEXT_MUTED, width);
+        let radius = CornerRadius::same(theme::R_MD);
+        let fill = if selected {
+            theme::alpha(theme::ACCENT, 0.12)
+        } else if response.contains_pointer() {
+            theme::RAISED
+        } else {
+            theme::SURFACE
+        };
+        ui.painter().rect_filled(rect, radius, fill);
+        if selected {
+            ui.painter().rect_stroke(rect, radius, Stroke::new(1.0_f32, theme::alpha(theme::ACCENT, 0.6)), StrokeKind::Inside);
         }
+        let mut x = rect.left() + theme::S2;
+        if mark != CardMark::None {
+            let slot = Rect::from_center_size(Pos2::new(x + CHECK_TARGET / 2.0, rect.center().y), vec2(CHECK_TARGET, CHECK_TARGET));
+            match mark {
+                CardMark::Check(on) => {
+                    let r = ui.interact(slot, response.id.with("check"), Sense::click());
+                    check_box(ui, slot, &r, on);
+                    let label = format!("Select {title}");
+                    r.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, &label));
+                    check = Some(r.on_hover_text(if on { "Remove from your list" } else { "Add to your list" }));
+                }
+                _ => glyph::paint(ui.painter(), glyph::centered(slot, 16.0), Glyph::Check, theme::OK),
+            }
+            x = slot.right() + theme::S1;
+        }
+        let icon_size = 40.0;
+        let icon_rect = Rect::from_min_size(Pos2::new(x, rect.center().y - icon_size / 2.0), vec2(icon_size, icon_size));
+        icon(ui, icon_rect, tex, title, theme::TEXT_MUTED);
+        let x = icon_rect.right() + theme::S2;
+        let text_width = rect.right() - x - theme::S2;
+        let top = rect.top() + 10.0;
+        let mut title_width = text_width;
+        if mark == CardMark::Installed {
+            let label = "Installed";
+            let badge_x = rect.right() - theme::S2 - badge_width(ui, label);
+            badge_exact(ui, Pos2::new(badge_x, top), label, theme::OK);
+            title_width = badge_x - x - theme::S1;
+        }
+        line(ui, Pos2::new(x, top), title, theme::body_strong(), theme::TEXT, title_width);
+        line(ui, Pos2::new(x, top + 20.0), subtitle, theme::label(), theme::TEXT_MUTED, text_width);
+        line(ui, Pos2::new(x, top + 37.0), detail, theme::label(), theme::TEXT_MUTED, text_width);
         focus_ring(ui, rect, &response);
     }
-    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, title));
-    response
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
+    (response, check)
 }
 
 pub fn badge(ui: &Ui, pos: Pos2, text: &str, color: Color32) -> Rect {
