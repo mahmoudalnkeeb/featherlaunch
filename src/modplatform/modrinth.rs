@@ -122,9 +122,17 @@ pub struct Version {
     pub game_versions: Vec<String>,
     #[serde(default)]
     pub changelog: Option<String>,
+    #[serde(default)]
+    pub version_type: String,
 }
 
 impl Version {
+    /// The version to install when nobody chose one: the newest stable, or just the newest.
+    pub fn best(versions: Vec<Version>) -> Option<Version> {
+        let stable = versions.iter().position(|v| v.version_type == "release").unwrap_or(0);
+        versions.into_iter().nth(stable)
+    }
+
     pub fn primary_file(&self) -> Option<&VersionFile> {
         self.files.iter().find(|f| f.primary).or_else(|| self.files.first())
     }
@@ -744,6 +752,25 @@ mod tests {
         assert_eq!(copy_into(&dir, ContentKind::Mod, std::slice::from_ref(&file)).unwrap(), 1);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "mod");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn prefers_a_stable_version() {
+        let version = |id: &str, kind: &str| Version {
+            id: id.into(),
+            project_id: String::new(),
+            name: String::new(),
+            version_number: String::new(),
+            files: Vec::new(),
+            dependencies: Vec::new(),
+            loaders: Vec::new(),
+            game_versions: Vec::new(),
+            changelog: None,
+            version_type: kind.into(),
+        };
+        assert_eq!(Version::best(vec![version("a", "beta"), version("b", "release")]).unwrap().id, "b");
+        assert_eq!(Version::best(vec![version("a", "beta")]).unwrap().id, "a");
+        assert!(Version::best(Vec::new()).is_none());
     }
 
     #[test]

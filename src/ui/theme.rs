@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use eframe::egui::{self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Frame, Margin, Shadow, Stroke, TextStyle};
+use eframe::egui::{self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Shadow, Stroke, TextStyle};
 
 use crate::minecraft::instance::Loader;
 
@@ -81,14 +81,6 @@ pub fn caption() -> FontId {
 
 pub fn alpha(color: Color32, alpha: f32) -> Color32 {
     color.gamma_multiply(alpha)
-}
-
-pub fn card() -> Frame {
-    Frame::new()
-        .fill(SURFACE)
-        .stroke(Stroke::new(1.0_f32, BORDER))
-        .corner_radius(CornerRadius::same(R_LG))
-        .inner_margin(Margin::same(S4 as i8))
 }
 
 /// System UI font files as (regular, semibold), best first. Read from disk so nothing is

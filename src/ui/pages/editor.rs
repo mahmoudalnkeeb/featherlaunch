@@ -2,7 +2,7 @@
 //! Instance page: mods / resource packs / shader packs (installed + Modrinth), worlds, log, settings.
 //! It replaces the library in the main area instead of floating in a window.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use eframe::egui::{self, Pos2, Rect, RichText, Sense, UiBuilder, vec2};
@@ -11,7 +11,7 @@ use crate::minecraft::instance::{ExportInfo, Instance, Loader, World};
 use crate::minecraft::logs::{self, SavedLog};
 use crate::minecraft::servers::{self, Server};
 use crate::minecraft::world;
-use crate::modplatform::modrinth::{self, ContentKind, LocalFile, ProjectMeta, SearchResponse, Update, Version};
+use crate::modplatform::modrinth::{self, ContentIndex, ContentKind, LocalFile, ProjectMeta, SearchHit, SearchResponse, Update, Version};
 use crate::modplatform::{export, mrpack};
 use crate::ui::dialogs::Confirm;
 use crate::ui::glyph::Glyph;
@@ -19,7 +19,6 @@ use crate::ui::project::{self, Browser, Request};
 use crate::ui::widgets::{self, Kind};
 use crate::ui::{App, Event, Page, console, main_view, theme};
 
-const FOOTER_HEIGHT: f32 = 56.0;
 /// Below this width a content toolbar uses shorter labels, so all of it fits.
 const NARROW_TOOLBAR: f32 = 600.0;
 /// Room for a world row's buttons, leaving the rest of the row for its name.
@@ -95,6 +94,10 @@ pub struct Editor {
     /// The world whose data packs are open on the Worlds tab.
     pack_world: Option<World>,
     queue: Vec<Queued>,
+    /// Projects picked with their box, waiting for their versions to load.
+    picking: HashSet<String>,
+    /// The list of installed projects is out of date.
+    installed_stale: bool,
     reviewing: bool,
     saves_view: SavesView,
     servers: Option<Vec<Server>>,
@@ -144,6 +147,8 @@ impl Editor {
             worlds: None,
             pack_world: None,
             queue: Vec::new(),
+            picking: HashSet::new(),
+            installed_stale: true,
             reviewing: false,
             saves_view: SavesView::default(),
             servers: None,
@@ -187,6 +192,15 @@ impl Editor {
     /// The list on screen stays until the new one arrives, so it doesn't flicker.
     pub fn invalidate(&mut self) {
         self.stale = true;
+        self.installed_stale = true;
+    }
+
+    /// Adds a project picked with its box, once its versions are in. False if it has none.
+    pub fn on_picked(&mut self, kind: ContentKind, hit: SearchHit, version: Option<Version>) -> bool {
+        self.picking.remove(&hit.project_id);
+        let Some(version) = version else { return false };
+        toggle_queued(&mut self.queue, Queued { kind, world: self.pack_world.clone(), meta: hit.meta(), version });
+        true
     }
 
     fn start_read(&mut self) -> Option<u64> {
@@ -353,6 +367,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
     review_dialog(app, ui.ctx(), &mut ed);
     let esc = !ed.esc_taken
         && !ed.reviewing
+        && ed.browser.hit.is_none()
         && app.errors.is_empty()
         && app.confirm.is_none()
         && app.device_code.is_none()
@@ -1129,8 +1144,16 @@ fn browse(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind) 
     let target = Some((mc.clone(), loader));
     let note = if loader == Loader::Vanilla { format!("for {mc}") } else { format!("for {mc}  ·  {}", loader.name()) };
     let hint = format!("Search {}", kind.label().to_lowercase());
+    if std::mem::take(&mut ed.installed_stale) {
+        let (inst, bus) = (ed.inst.clone(), app.bus.clone());
+        app.rt.spawn_blocking(move || {
+            let projects = ContentIndex::load(&inst).files.into_values().map(|e| e.project_id).collect();
+            bus.send(Event::InstalledProjects { inst: inst.id, projects });
+        });
+    }
     let mut picked = None;
     let queue = &ed.queue;
+    let picking = &ed.picking;
     let world = ed.pack_world.as_ref();
     let footer = |ui: &mut egui::Ui, versions: &[Version], idx: &mut usize| {
         *idx = (*idx).min(versions.len() - 1);
@@ -1157,7 +1180,14 @@ fn browse(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind) 
         }
     };
     ed.browser.categories = app.categories_for(kind);
-    let mut request = project::show(ui, &app.icons, &mut ed.browser, &hint, &note, FOOTER_HEIGHT, footer);
+    ed.browser.selectable = true;
+    ed.browser.picked = queue
+        .iter()
+        .filter(|q| q.world.as_ref().map(|w| &w.path) == world.map(|w| &w.path))
+        .map(|q| q.version.project_id.clone())
+        .chain(picking.iter().cloned())
+        .collect();
+    let mut request = project::show(ui, &app.icons, &mut ed.browser, &hint, &note, footer);
     if ed.searched_kind != Some(kind) {
         ed.searched_kind = Some(kind);
         request = Some(Request::Search(0));
@@ -1176,8 +1206,30 @@ fn browse(app: &mut App, ui: &mut egui::Ui, ed: &mut Editor, kind: ContentKind) 
             ed.browser.open(hit);
             app.load_project_versions(project, kind, target);
         }
+        Some(Request::Toggle(hit)) => toggle_pick(app, ed, kind, hit, target),
         None => {}
     }
+}
+
+/// The box on a result. It takes a project off the list, or adds its best version, which has to
+/// load first.
+fn toggle_pick(app: &mut App, ed: &mut Editor, kind: ContentKind, hit: SearchHit, target: Option<(String, Loader)>) {
+    let world = ed.pack_world.clone();
+    let same_world = |q: &Queued| q.world.as_ref().map(|w| &w.path) == world.as_ref().map(|w| &w.path);
+    if let Some(i) = ed.queue.iter().position(|q| q.version.project_id == hit.project_id && same_world(q)) {
+        ed.queue.remove(i);
+        return;
+    }
+    if !ed.picking.insert(hit.project_id.clone()) {
+        return;
+    }
+    let (inst, bus) = (ed.inst.id.clone(), app.bus.clone());
+    app.rt.spawn(async move {
+        let (mc, loader) = target.unzip();
+        let versions = modrinth::project_versions(&hit.project_id, kind, mc.as_deref(), loader).await;
+        let version = versions.ok().and_then(Version::best).map(Box::new);
+        bus.send(Event::Picked { inst, kind, hit: Box::new(hit), version });
+    });
 }
 fn days_ago(verb: &str, modified: Option<std::time::SystemTime>) -> String {
     modified

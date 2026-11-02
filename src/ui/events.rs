@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Messages from background work to the UI thread, and how the app handles them.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -19,7 +20,7 @@ use crate::minecraft::logs::SavedLog;
 use crate::minecraft::meta::mojang::ManifestEntry;
 use crate::minecraft::servers::Server;
 use crate::minecraft::skin;
-use crate::modplatform::modrinth::{Category, ContentKind, LocalFile, SearchResponse, Update, Version};
+use crate::modplatform::modrinth::{Category, ContentKind, LocalFile, SearchHit, SearchResponse, Update, Version};
 use crate::updater::Release;
 
 pub enum Event {
@@ -59,6 +60,8 @@ pub enum Event {
     VersionsFailed(String),
     ContentChanged,
     Categories(Vec<Category>),
+    InstalledProjects { inst: String, projects: HashSet<String> },
+    Picked { inst: String, kind: ContentKind, hit: Box<SearchHit>, version: Option<Box<Version>> },
     Updates(Vec<Update>),
     Java(Vec<JavaInstall>),
     Icon { key: String, image: Option<crate::icons::Decoded> },
@@ -265,6 +268,22 @@ impl App {
                     }
                 }
                 Event::Categories(list) => self.categories = list,
+                Event::InstalledProjects { inst, projects } => {
+                    if let Some(e) = self.editor.as_mut().filter(|e| e.instance_id() == inst) {
+                        e.browser.installed = projects;
+                    }
+                }
+                Event::Picked { inst, kind, hit, version } => {
+                    let title = hit.title.clone();
+                    let added = self
+                        .editor
+                        .as_mut()
+                        .filter(|e| e.instance_id() == inst)
+                        .is_none_or(|e| e.on_picked(kind, *hit, version.map(|v| *v)));
+                    if !added {
+                        self.warn(format!("{title} has no version for this instance"));
+                    }
+                }
                 Event::Updates(updates) => {
                     if let Some(e) = &mut self.editor {
                         e.on_updates(updates);

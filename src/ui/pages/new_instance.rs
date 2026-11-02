@@ -16,7 +16,6 @@ use crate::ui::widgets::{self, Kind};
 use crate::ui::{App, Event, Page, theme};
 
 const SIDE_WIDTH: f32 = 240.0;
-const PACK_FOOTER: f32 = 72.0;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub enum Mode {
@@ -314,7 +313,7 @@ fn modpacks(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
             }
         });
     };
-    let mut request = project::show(ui, &app.icons, browser, "Search modpacks", "", PACK_FOOTER, footer);
+    let mut request = project::show(ui, &app.icons, browser, "Search modpacks", "", footer);
     if first_search {
         request = Some(Request::Search(0));
     }
@@ -328,7 +327,7 @@ fn modpacks(app: &mut App, ui: &mut egui::Ui, st: &mut NewInstance) -> bool {
             st.browser.open(hit);
             app.load_project_versions(project, ContentKind::Modpack, None);
         }
-        None => {}
+        Some(Request::Toggle(_)) | None => {}
     }
     let (Some(version), Some(pack)) = (install, st.browser.hit.clone()) else { return false };
     let group = st.group.trim().to_string();

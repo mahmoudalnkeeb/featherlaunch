@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Modrinth search: the results list and project detail shared by the Browse tab and the Modpacks
-//! page. Results sit on the left and the selected project on the right, or one at a time when the
-//! window is too narrow for both.
+//! Modrinth search: the results grid and project details shared by the Browse tab and the Modpacks
+//! page. Details open in a popup, so the results keep the whole page.
 
-use eframe::egui::{self, Layout, Rect, RichText, Sense, Ui, UiBuilder, vec2};
+use std::collections::HashSet;
+
+use eframe::egui::{self, RichText, Sense, Ui, vec2};
 
 use crate::modplatform::modrinth::{SearchFilter, SearchHit, SearchResponse, Sort, Version, category_label};
 use crate::ui::icons::Icons;
 use crate::ui::theme;
-use crate::ui::widgets::{self, Kind};
+use crate::ui::widgets::{self, CardMark, Kind};
 
 /// Results per request. Modrinth's default, and what the pager steps by.
 const PAGE_SIZE: u64 = 20;
-const DETAIL_WIDTH: f32 = 300.0;
-const TWO_PANES: f32 = 640.0;
+const CARD_MIN_WIDTH: f32 = 250.0;
+const CARD_GAP: f32 = theme::S2;
+const DETAIL_DIALOG_WIDTH: f32 = 520.0;
+const DESCRIPTION_HEIGHT: f32 = 170.0;
 pub const INSTALL_WIDTH: f32 = 72.0;
 const FILTER_WIDTH: f32 = 112.0;
 const NOTE_WIDTH: f32 = 120.0;
@@ -31,6 +34,12 @@ pub struct Browser {
     pub versions_failed: bool,
     pub version_idx: usize,
     pub filter: SearchFilter,
+    /// Results can be picked with a box, for installing together.
+    pub selectable: bool,
+    /// Project IDs already in the instance.
+    pub installed: HashSet<String>,
+    /// Project IDs picked for installing.
+    pub picked: HashSet<String>,
     /// Names of the categories that can be picked.
     pub categories: Vec<String>,
 }
@@ -93,6 +102,7 @@ impl Browser {
 pub enum Request {
     Search(u64),
     Versions(SearchHit),
+    Toggle(SearchHit),
 }
 
 fn subtitle(hit: &SearchHit) -> String {
@@ -103,29 +113,22 @@ fn icon(icons: &Icons, hit: &SearchHit) -> Option<egui::TextureId> {
     icons.get_opt(hit.icon_url.as_deref().filter(|u| !u.is_empty()))
 }
 
-/// The search box, results and detail, filling `ui`. `footer` draws the install controls under a
-/// project with versions, at `footer_height`, so they stay on screen however long the text is.
+/// How many cards fit across `width`.
+fn columns(width: f32) -> usize {
+    (((width + CARD_GAP) / (CARD_MIN_WIDTH + CARD_GAP)).floor() as usize).max(1)
+}
+
+/// The search box and results, filling `ui`, and the open project's popup. `footer` draws the
+/// install controls under a project with versions.
 pub fn show(
     ui: &mut Ui,
     icons: &Icons,
     b: &mut Browser,
     hint: &str,
     note: &str,
-    footer_height: f32,
     footer: impl FnOnce(&mut Ui, &[Version], &mut usize),
 ) -> Option<Request> {
     let mut request = None;
-    let two_panes = ui.available_width() >= TWO_PANES;
-    if !two_panes && b.hit.is_some() {
-        if widgets::pill(ui, Kind::Ghost, None, "Back to results").clicked() {
-            b.hit = None;
-            return None;
-        }
-        ui.add_space(theme::S2);
-        detail(ui, icons, b, footer_height, footer, &mut request);
-        return request;
-    }
-
     let before = b.filter.clone();
     ui.horizontal(|ui| {
         let width = (ui.available_width() * 0.32).clamp(150.0, 300.0);
@@ -163,20 +166,8 @@ pub fn show(
     }
     ui.add_space(theme::S3);
 
-    let area = ui.available_rect_before_wrap();
-    if !two_panes {
-        list(ui, icons, b, &mut request);
-        return request;
-    }
-    let split = area.right() - DETAIL_WIDTH;
-    let left = Rect::from_min_max(area.min, egui::pos2(split - theme::S4, area.bottom()));
-    let right = Rect::from_min_max(egui::pos2(split, area.top()), area.max);
-    ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::top_down(egui::Align::LEFT)), |ui| {
-        list(ui, icons, b, &mut request);
-    });
-    ui.scope_builder(UiBuilder::new().max_rect(right).layout(Layout::top_down(egui::Align::LEFT)), |ui| {
-        detail(ui, icons, b, footer_height, footer, &mut request);
-    });
+    list(ui, icons, b, &mut request);
+    detail(ui, icons, b, footer, &mut request);
     request
 }
 
@@ -198,11 +189,27 @@ fn list(ui: &mut Ui, icons: &Icons, b: &mut Browser, request: &mut Option<Reques
             }
             return;
         }
-        for hit in &b.results {
-            let selected = b.hit.as_ref().is_some_and(|h| h.project_id == hit.project_id);
-            if widgets::project_row(ui, icon(icons, hit), &hit.title, &subtitle(hit), &hit.description, selected).clicked() {
-                *request = Some(Request::Versions(hit.clone()));
-            }
+        let width = ui.available_width();
+        let columns = columns(width);
+        let card_width = (width - CARD_GAP * (columns - 1) as f32) / columns as f32;
+        for row in b.results.chunks(columns) {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = CARD_GAP;
+                for hit in row {
+                    let mark = match (b.selectable, b.installed.contains(&hit.project_id)) {
+                        (_, true) => CardMark::Installed,
+                        (true, false) => CardMark::Check(b.picked.contains(&hit.project_id)),
+                        (false, false) => CardMark::None,
+                    };
+                    let (card, check) =
+                        widgets::project_card(ui, card_width, icon(icons, hit), &hit.title, &subtitle(hit), &hit.description, mark);
+                    if check.is_some_and(|c| c.clicked()) {
+                        *request = Some(Request::Toggle(hit.clone()));
+                    } else if card.clicked() {
+                        *request = Some(Request::Versions(hit.clone()));
+                    }
+                }
+            });
         }
     });
     if paged {
@@ -226,29 +233,25 @@ fn detail(
     ui: &mut Ui,
     icons: &Icons,
     b: &mut Browser,
-    footer_height: f32,
     footer: impl FnOnce(&mut Ui, &[Version], &mut usize),
     request: &mut Option<Request>,
 ) {
-    theme::card().show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        let Some(hit) = b.hit.clone() else {
-            ui.label(RichText::new("Select a project to see its versions.").color(theme::TEXT_MUTED));
-            return;
-        };
-        let height = (ui.available_height() - footer_height - theme::S3).max(48.0);
-        egui::ScrollArea::vertical().id_salt("detail").max_height(height).auto_shrink([false, true]).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
-                widgets::icon(ui, rect, icon(icons, &hit), &hit.title, theme::TEXT_MUTED);
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.add_space(3.0);
-                    widgets::line_tip(ui, &hit.title, theme::title(), theme::TEXT, 22.0);
-                    widgets::line_tip(ui, &subtitle(&hit), theme::label(), theme::TEXT_MUTED, 18.0);
-                });
+    let Some(hit) = b.hit.clone() else { return };
+    let (_, closed) = widgets::dialog(ui.ctx(), "project-details", &hit.title, DETAIL_DIALOG_WIDTH, |ui| {
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
+            widgets::icon(ui, rect, icon(icons, &hit), &hit.title, theme::TEXT_MUTED);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.add_space(3.0);
+                widgets::line_tip(ui, &subtitle(&hit), theme::label(), theme::TEXT_MUTED, 18.0);
+                if b.installed.contains(&hit.project_id) {
+                    widgets::line_tip(ui, "Installed in this instance", theme::label(), theme::OK, 18.0);
+                }
             });
-            ui.add_space(theme::S2);
+        });
+        ui.add_space(theme::S2);
+        egui::ScrollArea::vertical().id_salt("detail").max_height(DESCRIPTION_HEIGHT).auto_shrink([false, true]).show(ui, |ui| {
             ui.label(RichText::new(&hit.description).color(theme::TEXT));
         });
         ui.add_space(theme::S3);
@@ -267,6 +270,9 @@ fn detail(
             Some(versions) => footer(ui, versions, &mut b.version_idx),
         }
     });
+    if closed {
+        b.hit = None;
+    }
 }
 
 #[cfg(test)]
@@ -282,6 +288,14 @@ mod tests {
             downloads: 0,
             icon_url: None,
         }
+    }
+
+    #[test]
+    fn the_grid_fits_the_width() {
+        assert_eq!(columns(200.0), 1);
+        assert_eq!(columns(508.0), 2);
+        assert_eq!(columns(516.0), 2);
+        assert_eq!(columns(780.0), 3);
     }
 
     #[test]
