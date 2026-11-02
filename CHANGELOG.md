@@ -3,6 +3,32 @@
 The notes for each version are published with its release, so write them for people using the
 launcher. Add a section here before tagging; the release job stops without one.
 
+## 1.4.0 - 2026-11-02
+
+### Added
+
+- Tick the box beside a mod to add it to your list, without opening it first. It picks the newest
+  stable version. Open the mod to choose a different one.
+- Mods you already have now show a check and an Installed badge while you browse.
+
+### Changed
+
+- Search results are now a grid, so more fit on screen, and details open in a popup.
+- The skin preview now shows the outer layer standing out from the body, as it does in game.
+
+### Fixed
+
+- Semi-transparent parts of a skin's outer layer no longer hide what's under them in the preview.
+
+### Known issues
+
+- If you close the launcher while a game is running, that session's play time isn't saved. Its log
+  is still under Saved logs.
+- CurseForge packs can't be imported yet.
+- Turning off a data pack that is a folder, not a zip, has no effect in game.
+- A desktop shortcut opens a new copy of the launcher, even if one is already running.
+- On a brand new instance, joining a server waits until you dismiss Minecraft's first-run screen.
+
 ## 1.3.0 - 2026-11-02
 
 ### Changed
