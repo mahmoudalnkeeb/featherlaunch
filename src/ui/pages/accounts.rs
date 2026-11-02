@@ -30,7 +30,7 @@ impl AccountsUi {
 }
 
 const SKIN_WIDTH: f32 = 200.0;
-const SKIN_BODY: egui::Vec2 = egui::vec2(112.0, 224.0);
+const SKIN_BODY: egui::Vec2 = egui::vec2(108.0, 204.0);
 
 pub fn page(app: &mut App, ui: &mut egui::Ui) {
     let mut select = None;

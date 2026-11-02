@@ -150,11 +150,11 @@ Quilt `#9A6BD0`, Forge `#5B7CB8`, NeoForge `#E08A45`.
   and console are pages, not floating windows.
 - **New instance page:** a segmented control picks Custom version, Modrinth modpacks or Import. Custom has the version list on the left, filling the height, and the form on the right,
   with the latest release already picked.
-- **Modrinth search (`src/ui/pages/project.rs`):** Browse and Modpacks share a results list and a detail
-  pane with the install controls in a footer that stays on screen. Sort and category sit in the search
-  row, so the list keeps its height. On an instance page, the footer adds projects to a list instead
-  of installing them; a Review button then shows the list and installs it all as one task. Under 640 px the detail replaces
-  the list, with a "Back to results" button.
+- **Modrinth search (`src/ui/pages/project.rs`):** Browse and Modpacks share a results grid and a details
+  popup with the install controls at the bottom. Sort and category sit in the search
+  row, so the list keeps its height. On an instance page, a box left of each icon adds a project
+  to a list, and installed projects show a check and an Installed badge. Review shows the list and
+  installs it all as one task.
 - **Forms:** a 160 px label column and a control (`widgets::form_row`), with sections under a
   caption. A save bar is fixed to the bottom only while the form differs from what is saved.
   Leaving an instance page with unsaved edits asks first.
