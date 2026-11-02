@@ -140,7 +140,7 @@ impl App {
             launcher_update: Default::default(),
         };
         app.selected = app.instances.first().map(|i| i.id.clone());
-        app.startup();
+        app.startup(args.launch.is_none());
         app.follow_args(args);
         app
     }
@@ -162,7 +162,8 @@ impl App {
         self.launch(&id, args.offline);
     }
 
-    fn startup(&mut self) {
+    /// `sign_in` is false when a launch follows, because that signs in by itself.
+    fn startup(&mut self, sign_in: bool) {
         self.rt.spawn_blocking(crate::paths::clean_cache);
         self.rt.spawn_blocking(updater::clean_old);
         if self.cfg.check_updates {
@@ -172,7 +173,8 @@ impl App {
             self.load_skin(&account);
         }
         // Silent sign-in refresh so launching is instant; failures show as a toast.
-        if let Some(account) = self.accounts.selected().cloned()
+        if sign_in
+            && let Some(account) = self.accounts.selected().cloned()
             && account.kind == AccountKind::Microsoft
         {
             let bus = self.bus.clone();

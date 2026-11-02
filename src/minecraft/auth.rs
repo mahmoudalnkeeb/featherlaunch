@@ -6,6 +6,7 @@
 //! Windows credential holds at most 2.5 KB.
 //! Minecraft access tokens stay in memory and are refreshed when they expire.
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -26,6 +27,12 @@ const CLIENT_ID: &str = match option_env!("FEATHERLAUNCH_MSA_CLIENT_ID") {
 const KEYRING_SERVICE: &str = "featherlaunch";
 const CHUNK: usize = 1000;
 const SCOPE: &str = "XboxLive.signin offline_access";
+/// The longest a sign-in waits for Minecraft's rate limit before giving up.
+const MAX_LOGIN_WAIT: Duration = Duration::from_secs(30);
+
+/// Minecraft allows few logins, so a caller that has to wait for one reuses its result.
+static SIGNING_IN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static SIGNED_IN: Mutex<Vec<Account>> = Mutex::new(Vec::new());
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AccountKind {
@@ -161,6 +168,7 @@ pub fn load_secret(account: &str) -> Result<String> {
 }
 
 fn delete_secret(account: &str) -> Result<()> {
+    signed_in().retain(|a| a.id != account);
     for i in 0..=stored_count(account) {
         let _ = entry(account, i)?.delete_credential();
     }
@@ -237,7 +245,20 @@ pub async fn finish_device_login(code: &DeviceCode, cancel: &AtomicBool) -> Resu
     complete(ms).await.map(Some)
 }
 
+fn signed_in() -> std::sync::MutexGuard<'static, Vec<Account>> {
+    SIGNED_IN.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// How long Minecraft asks to wait, from the `Retry-After` header of a 429 response.
+fn login_wait(retry_after: Option<&str>) -> Duration {
+    Duration::from_secs(retry_after.and_then(|s| s.trim().parse().ok()).unwrap_or(5))
+}
+
 pub async fn refresh(account: &Account) -> Result<Account> {
+    let _one_at_a_time = SIGNING_IN.lock().await;
+    if let Some(done) = signed_in().iter().find(|a| a.id == account.id && a.has_valid_token()) {
+        return Ok(done.clone());
+    }
     let refresh_token = load_secret(&account.id).context("no saved sign-in for this account; sign in again")?;
     let resp = net::client()
         .post(format!("{MS_BASE}/token"))
@@ -248,7 +269,10 @@ pub async fn refresh(account: &Account) -> Result<Account> {
         let err: MsError = resp.json().await?;
         bail!("Your Microsoft sign-in expired ({}). Remove the account and sign in again.", err.error);
     }
-    complete(resp.json().await?).await
+    let done = complete(resp.json().await?).await?;
+    signed_in().retain(|a| a.id != done.id);
+    signed_in().push(done.clone());
+    Ok(done)
 }
 
 pub async fn ensure_token(account: Account) -> Result<Account> {
@@ -348,15 +372,22 @@ async fn complete(ms: MsToken) -> Result<Account> {
     let xsts: XblResponse = resp.error_for_status().context("Xbox authorization failed")?.json().await?;
     let xui = xsts.display_claims.xui.first().ok_or_else(|| anyhow!("Xbox response had no user"))?;
 
-    let mc: McLogin = client
-        .post("https://api.minecraftservices.com/authentication/login_with_xbox")
-        .json(&json!({ "identityToken": format!("XBL3.0 x={};{}", xui.uhs, xsts.token) }))
-        .send()
-        .await?
-        .error_for_status()
-        .context("Minecraft sign-in failed. Please try again later.")?
-        .json()
-        .await?;
+    let identity = json!({ "identityToken": format!("XBL3.0 x={};{}", xui.uhs, xsts.token) });
+    let login = || client.post("https://api.minecraftservices.com/authentication/login_with_xbox").json(&identity).send();
+    let mut resp = login().await?;
+    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let wait = login_wait(resp.headers().get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok()));
+        if wait <= MAX_LOGIN_WAIT {
+            tokio::time::sleep(wait).await;
+            resp = login().await?;
+        }
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            bail!(
+                "Minecraft has had too many sign-ins from this account. Wait a few minutes and try again, or use Play offline in the instance's More menu."
+            );
+        }
+    }
+    let mc: McLogin = resp.error_for_status().context("Minecraft sign-in failed. Please try again later.")?.json().await?;
 
     let profile = fetch_profile(&mc.access_token).await?;
     let (skin_url, skin_slim) = active_skin(&profile);
@@ -431,6 +462,34 @@ fn active_skin(profile: &Profile) -> (Option<String>, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_second_sign_in_reuses_the_first() {
+        let account = Account {
+            id: "signed-in-test".into(),
+            name: "Steve".into(),
+            kind: AccountKind::Microsoft,
+            skin_url: None,
+            skin_slim: false,
+            token: Some("from the first sign-in".into()),
+            token_expires: now() + 3600,
+            xuid: String::new(),
+        };
+        signed_in().push(account.clone());
+        let waiting = Account { token: None, token_expires: 0, ..account };
+
+        // No saved sign-in exists for this ID, so anything but the shared result would fail.
+        let done = tokio::runtime::Runtime::new().unwrap().block_on(refresh(&waiting)).unwrap();
+        assert_eq!(done.token.as_deref(), Some("from the first sign-in"));
+        signed_in().retain(|a| a.id != waiting.id);
+    }
+
+    #[test]
+    fn a_rate_limit_says_how_long_to_wait() {
+        assert_eq!(login_wait(Some("12")), Duration::from_secs(12));
+        assert_eq!(login_wait(Some("soon")), Duration::from_secs(5));
+        assert_eq!(login_wait(None), Duration::from_secs(5));
+    }
 
     fn account(id: &str, kind: AccountKind) -> Account {
         Account {
