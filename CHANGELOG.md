@@ -3,6 +3,28 @@
 The notes for each version are published with its release, so write them for people using the
 launcher. Add a section here before tagging; the release job stops without one.
 
+## 1.4.2 - 2026-11-02
+
+### Fixed
+
+- Starting the game from a desktop shortcut no longer signs in twice, which could end in a
+  "429 Too Many Requests" error.
+- If Minecraft limits your sign-ins, the launcher waits and tries once more, then tells you what to
+  do instead of showing the raw error.
+
+### Changed
+
+- Desktop shortcuts now use the instance's icon. Make the shortcut again to update an old one.
+
+### Known issues
+
+- If you close the launcher while a game is running, that session's play time isn't saved. Its log
+  is still under Saved logs.
+- CurseForge packs can't be imported yet.
+- Turning off a data pack that is a folder, not a zip, has no effect in game.
+- A desktop shortcut opens a new copy of the launcher, even if one is already running.
+- On a brand new instance, joining a server waits until you dismiss Minecraft's first-run screen.
+
 ## 1.4.1 - 2026-11-02
 
 ### Changed
