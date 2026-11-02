@@ -67,6 +67,19 @@ pub fn set_instance_icon_file(path: &Path, inst_dir: &Path) -> Result<()> {
     set_instance_icon(&bytes, inst_dir).with_context(|| format!("using {} as an icon", path.display()))
 }
 
+/// An ICO file for a Windows shortcut: one image, stored as PNG, which ICO allows.
+#[cfg(any(windows, test))]
+pub fn ico_from_image(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut png = Vec::new();
+    square(image::load_from_memory(bytes)?, INSTANCE_ICON_SIZE).write_to(&mut std::io::Cursor::new(&mut png), ImageFormat::Png)?;
+    let side = INSTANCE_ICON_SIZE as u8;
+    let mut ico = vec![0, 0, 1, 0, 1, 0, side, side, 0, 0, 1, 0, 32, 0];
+    ico.extend((png.len() as u32).to_le_bytes());
+    ico.extend(((ico.len() + 4) as u32).to_le_bytes());
+    ico.extend(png);
+    Ok(ico)
+}
+
 pub async fn download_instance_icon(url: &str, inst_dir: PathBuf) -> Result<()> {
     let bytes = net::client().get(url).send().await?.error_for_status()?.bytes().await?;
     tokio::task::spawn_blocking(move || set_instance_icon(&bytes, &inst_dir)).await?
@@ -83,5 +96,22 @@ mod tests {
         assert_eq!(sq.dimensions(), (SIZE, SIZE));
         let d = decoded(sq);
         assert_eq!(d.rgba.len(), (SIZE * SIZE * 4) as usize);
+    }
+
+    #[test]
+    fn an_ico_points_at_its_image() {
+        let mut png = Vec::new();
+        RgbaImage::from_pixel(200, 100, image::Rgba([10, 20, 30, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), ImageFormat::Png)
+            .unwrap();
+        let ico = ico_from_image(&png).unwrap();
+
+        assert_eq!(&ico[..6], [0, 0, 1, 0, 1, 0], "an icon file with one image");
+        assert_eq!(ico[6..8], [128, 128]);
+        let size = u32::from_le_bytes(ico[14..18].try_into().unwrap()) as usize;
+        let offset = u32::from_le_bytes(ico[18..22].try_into().unwrap()) as usize;
+        assert_eq!((offset, offset + size), (22, ico.len()));
+        let image = image::load_from_memory_with_format(&ico[offset..], ImageFormat::Png).unwrap();
+        assert_eq!((image.width(), image.height()), (128, 128));
     }
 }
