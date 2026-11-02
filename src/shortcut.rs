@@ -19,24 +19,111 @@ pub fn create(inst: &Instance) -> Result<PathBuf> {
     write(desktop, &exe, inst)
 }
 
-/// Windows shortcuts are a binary format, so this asks Windows to write one. The values go through
-/// the environment, so a name can't break out of the script.
+/// Windows shortcuts are a binary format, so this asks Windows to write one.
 #[cfg(windows)]
 fn write(dir: &Path, exe: &Path, inst: &Instance) -> Result<PathBuf> {
-    use std::os::windows::process::CommandExt;
     let path = dir.join(format!("{}.lnk", file_name(&inst.name)));
-    let script = "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:FL_LINK); \
-                  $s.TargetPath = $env:FL_EXE; $s.Arguments = $env:FL_ARGS; $s.Save()";
-    let status = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .env("FL_LINK", &path)
-        .env("FL_EXE", exe)
-        .env("FL_ARGS", format!("--launch \"{}\"", inst.id))
-        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-        .status()
-        .context("starting PowerShell")?;
-    anyhow::ensure!(status.success(), "PowerShell could not create the shortcut");
+    shell_link::save(&path, exe, &format!("--launch \"{}\"", inst.id))?;
     Ok(path)
+}
+
+/// The two COM interfaces a shortcut needs. `windows-sys` has no interface types, so the tables
+/// below follow their order in shobjidl_core.h and objidl.h, and only name the calls used here.
+#[cfg(windows)]
+mod shell_link {
+    use std::ffi::{OsStr, c_void};
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+    use std::ptr::null_mut;
+
+    use anyhow::{Result, ensure};
+    use windows_sys::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+    };
+    use windows_sys::Win32::UI::Shell::ShellLink;
+    use windows_sys::core::{GUID, HRESULT};
+
+    const IID_SHELL_LINK: GUID = GUID::from_u128(0x000214f9_0000_0000_c000_000000000046);
+    const IID_PERSIST_FILE: GUID = GUID::from_u128(0x0000010b_0000_0000_c000_000000000046);
+
+    #[repr(C)]
+    struct Unknown {
+        query_interface: unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+        add_ref: usize,
+        release: unsafe extern "system" fn(*mut c_void) -> u32,
+    }
+
+    #[repr(C)]
+    struct ShellLinkCalls {
+        unknown: Unknown,
+        get_path_to_get_arguments: [usize; 8],
+        set_arguments: unsafe extern "system" fn(*mut c_void, *const u16) -> HRESULT,
+        get_hotkey_to_resolve: [usize; 8],
+        set_path: unsafe extern "system" fn(*mut c_void, *const u16) -> HRESULT,
+    }
+
+    #[repr(C)]
+    struct PersistFileCalls {
+        unknown: Unknown,
+        get_class_id_to_load: [usize; 3],
+        save: unsafe extern "system" fn(*mut c_void, *const u16, i32) -> HRESULT,
+    }
+
+    /// Releases a COM object when it goes out of scope.
+    struct Object(*mut c_void);
+
+    impl Object {
+        /// # Safety
+        /// The object has to implement the interface `T` describes.
+        unsafe fn calls<T>(&self) -> &T {
+            unsafe { &**self.0.cast::<*const T>() }
+        }
+    }
+
+    impl Drop for Object {
+        fn drop(&mut self) {
+            unsafe { (self.calls::<Unknown>().release)(self.0) };
+        }
+    }
+
+    struct ComThread(bool);
+
+    impl Drop for ComThread {
+        fn drop(&mut self) {
+            if self.0 {
+                unsafe { CoUninitialize() };
+            }
+        }
+    }
+
+    fn wide(text: &OsStr) -> Vec<u16> {
+        text.encode_wide().chain([0]).collect()
+    }
+
+    fn check(result: HRESULT, what: &str) -> Result<()> {
+        ensure!(result >= 0, "{what} failed with {:#010x}", result as u32);
+        Ok(())
+    }
+
+    pub fn save(path: &Path, target: &Path, arguments: &str) -> Result<()> {
+        // Failing here means the thread already runs COM in another mode, which works as well.
+        let _com = ComThread(unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) } >= 0);
+        let mut link = null_mut();
+        check(
+            unsafe { CoCreateInstance(&ShellLink, null_mut(), CLSCTX_INPROC_SERVER, &IID_SHELL_LINK, &mut link) },
+            "creating a shortcut",
+        )?;
+        let link = Object(link);
+        unsafe {
+            let calls = link.calls::<ShellLinkCalls>();
+            check((calls.set_path)(link.0, wide(target.as_os_str()).as_ptr()), "setting the shortcut's target")?;
+            check((calls.set_arguments)(link.0, wide(OsStr::new(arguments)).as_ptr()), "setting the shortcut's arguments")?;
+            let mut file = null_mut();
+            check((calls.unknown.query_interface)(link.0, &IID_PERSIST_FILE, &mut file), "opening the shortcut's file")?;
+            let file = Object(file);
+            check((file.calls::<PersistFileCalls>().save)(file.0, wide(path.as_os_str()).as_ptr(), 1), "saving the shortcut")
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -83,6 +170,13 @@ mod tests {
         let inst = Instance { id: "my_pack".into(), name: "My: Pack".into(), ..Default::default() };
         let path = write(&dir, Path::new("featherlaunch"), &inst).unwrap();
         assert!(path.starts_with(&dir) && path.exists(), "{}", path.display());
+        #[cfg(windows)]
+        {
+            // Shortcuts store their arguments as UTF-16.
+            let saved = std::fs::read(&path).unwrap();
+            let wanted: Vec<u8> = "--launch \"my_pack\"".encode_utf16().flat_map(u16::to_le_bytes).collect();
+            assert!(saved.windows(wanted.len()).any(|part| part == wanted), "arguments are in the shortcut");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

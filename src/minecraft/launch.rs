@@ -460,26 +460,36 @@ impl LogParser {
 
 pub type LineSink = Arc<dyn Fn(LogLine) + Send + Sync>;
 
+/// `javaw.exe` when it sits beside `java.exe`. It has no console, so the game needs nothing hidden.
+fn windowless_java(java: &Path) -> PathBuf {
+    let javaw = java.with_file_name("javaw.exe");
+    if java.file_name().is_some_and(|name| name.eq_ignore_ascii_case("java.exe")) && javaw.is_file() { javaw } else { java.to_path_buf() }
+}
+
 /// Starts the game and returns a sender that kills it when sent `()`.
 pub fn spawn(prep: Prepared, on_line: LineSink, on_exit: impl FnOnce(Option<i32>) + Send + 'static) -> Result<oneshot::Sender<()>> {
     let (stdout, stdout_writer) = std::io::pipe().context("creating the game's stdout pipe")?;
     let (stderr, stderr_writer) = std::io::pipe().context("creating the game's stderr pipe")?;
+    let java = windowless_java(&prep.java);
     let mut wrapper = prep.hooks.wrapper.split_whitespace();
     let mut cmd = match wrapper.next() {
         Some(program) => {
             let mut cmd = tokio::process::Command::new(program);
-            cmd.args(wrapper).arg(&prep.java);
+            cmd.args(wrapper).arg(&java);
             cmd
         }
-        None => tokio::process::Command::new(&prep.java),
+        None => tokio::process::Command::new(&java),
     };
     let envs = prep.hooks.env.iter().map(|(k, v)| (k, v));
     cmd.args(&prep.args).envs(envs).current_dir(&prep.game_dir).stdin(Stdio::null()).stdout(stdout_writer).stderr(stderr_writer);
+    // A wrapper, or a hand-picked runtime without javaw.exe, is a console program.
     #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    let mut child = cmd.spawn().with_context(|| format!("starting {}", prep.java.display()))?;
+    if !prep.hooks.wrapper.trim().is_empty() || !java.file_name().is_some_and(|name| name.eq_ignore_ascii_case("javaw.exe")) {
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd.spawn().with_context(|| format!("starting {}", java.display()))?;
 
-    on_line(LogLine { level: Level::Debug, text: format!("{} {}", prep.java.display(), redact(&prep.args)) });
+    on_line(LogLine { level: Level::Debug, text: format!("{} {}", java.display(), redact(&prep.args)) });
 
     let sink = on_line.clone();
     let mut parser = LogParser::default();
@@ -623,6 +633,21 @@ mod tests {
     fn hides_access_token() {
         let args: Vec<String> = ["--username", "Steve", "--accessToken", "secret"].map(String::from).to_vec();
         assert_eq!(redact(&args), "--username Steve --accessToken <hidden>");
+    }
+
+    #[test]
+    fn the_game_uses_javaw_when_it_is_installed() {
+        let dir = std::env::temp_dir().join(format!("featherlaunch-test-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (java, javaw, other) = (dir.join("java.exe"), dir.join("javaw.exe"), dir.join("custom.exe"));
+
+        assert_eq!(windowless_java(&java), java, "no javaw.exe beside it");
+        std::fs::write(&javaw, "").unwrap();
+        assert_eq!(windowless_java(&java), javaw);
+        assert_eq!(windowless_java(&dir.join("JAVA.EXE")), javaw);
+        assert_eq!(windowless_java(&javaw), javaw);
+        assert_eq!(windowless_java(&other), other, "a hand-picked program stays as it is");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
